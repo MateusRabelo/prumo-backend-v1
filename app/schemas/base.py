@@ -20,8 +20,10 @@ class BaseModel(PydanticBaseModel):
                 maximum = 150
             if info.field_name == 'description' and cls.__name__.startswith(('Transaction', 'Installment')):
                 maximum = 255
+            if info.field_name == 'preview_token' and cls.__name__ == 'ImportConfirm':
+                maximum = 800_000  # Signed statement previews already have a field-specific bound.
             if len(value) > maximum:
-                raise ValueError('Texto excede o limite de 10000 caracteres')
+                raise ValueError(f'Texto excede o limite de {maximum} caracteres')
         return value
 
     @model_validator(mode='after')
