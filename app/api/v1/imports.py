@@ -76,7 +76,7 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
                             reference_month: str = Form(...), card_id: UUID | None = Form(None),
                             family: FamilySpace = Depends(get_current_family),
                             user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    target(db, family.id, account_id, card_id)
+    _, source_card = target(db, family.id, account_id, card_id)
     now = datetime.now(timezone.utc)
     rate_key = hashlib.sha256(f'import:{user.id}:{int(time.time() // 3600)}'.encode()).hexdigest()
     count = db.execute(insert(RateLimitBucket).values(key=rate_key, count=1, expires_at=now + timedelta(hours=2))
@@ -111,7 +111,8 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
         rows, warnings = parse_statement(text, extension, reference, card=bool(card_id))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
-    statement = statement_summary(text, rows) if extension == 'pdf' else None
+    from app.services.ofx_statement import statement_summary as ofx_summary
+    statement = statement_summary(text, rows) if extension == 'pdf' else ofx_summary(text, rows, source_card) if extension == 'ofx' else None
     if statement and not card_id:
         raise HTTPException(422, detail='Este PDF é uma fatura de cartão. Selecione Fatura de cartão de crédito e o cartão correspondente.')
     if statement and statement['totals_match'] is False:
@@ -142,6 +143,7 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
     paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, ((CardInvoice.paid_amount > 0) | (CardInvoice.external_settled == True))).all()} if card_id else set()
     _, card = target(db, family.id, account_id, card_id)
     from app.api.v1.cards import get_current_invoice_period
+    from app.services.subscriptions import detect
     output = []
     for row, key in zip(rows, keys):
         rule = rules.get(merchant_key(row['original_description'])) or rules.get(normalize(row['original_description']))
@@ -159,8 +161,9 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
                     row['installment_info']['matching_plan_id'] = str(matched.id)
             except HTTPException as exc:
                 row['blocked'], row['warning'] = True, exc.detail
-        output.append({**row, 'description': description, 'category_id': str(matched.category_id) if matched else str(rule.category_id) if rule and rule.category_id else None,
-                       'learned': bool(rule), 'duplicate': key in existing,
+        suggestion = detect(db,family.id,card_id,row,description)
+        output.append({**row, 'subscription_info': suggestion, 'description': description, 'category_id': str(matched.category_id) if matched else str(rule.category_id) if rule and rule.category_id else None,
+                       'learned': bool(rule), 'duplicate': key in existing or bool(suggestion and suggestion.get('already_recorded')),
                        'possible_duplicate': (row['date'], row['amount'], normalize(description)) in prior_values})
     token = jwt.encode({'purpose': 'statement_preview', 'sub': str(user.id), 'family': str(family.id),
         'account': str(account_id), 'card': str(card_id) if card_id else None, 'rows': rows, 'statement': statement,
@@ -206,6 +209,8 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         if entry.index >= len(rows):
             raise HTTPException(400, detail='Linha fora da prévia original.')
         row = rows[entry.index]
+        if entry.import_subscription and entry.import_installment:
+            raise HTTPException(400,detail='Uma linha não pode ser assinatura e parcelamento ao mesmo tempo.')
         if row['blocked']:
             raise HTTPException(400, detail='A seleção contém uma linha que exige tratamento manual.')
         if card and (entry.type != 'DESPESA' or ((statement['year'], statement['month']) if statement else get_current_invoice_period(card, date.fromisoformat(row['date']))) in paid_periods):
@@ -253,7 +258,17 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
                     display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc)).on_conflict_do_update(
                     constraint='uq_import_merchant_family', set_={'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
             continue
-        transaction = Transaction(invoice_assignment='EXPLICIT' if statement_invoice else 'DATE', family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
+        subscription = None
+        if entry.import_subscription:
+            if not card or row.get('installment_info') or entry.type != 'DESPESA':
+                raise HTTPException(400, detail='Assinatura exige uma cobrança de cartão sem parcelamento.')
+            from app.services.subscriptions import observe
+            subscription, previous = observe(db,family,user,card,row,entry,category,actor)
+            if previous:
+                db.add(StatementImportLink(key=key,family_id=family.id,transaction_id=previous.id))
+                existing.add(key);skipped += 1
+                continue
+        transaction = Transaction(recurrence_id=subscription.id if subscription else None, invoice_assignment='EXPLICIT' if statement_invoice else 'DATE', family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
             description=entry.description, type=entry.type, amount=Decimal(row['amount']), account_id=account_id,
             payment_mode="CREDIT" if card_id else "ACCOUNT", card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
             responsible_name=card.responsible_name or actor if card else actor, is_shared=bool(card and card.responsible_name == 'Conjunto'),

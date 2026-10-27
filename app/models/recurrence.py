@@ -13,6 +13,11 @@ class RecurrenceRule(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     family_id = Column(UUID(as_uuid=True), ForeignKey("family_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    is_subscription = Column(Boolean,default=False,server_default='false',nullable=False)
+    card_id = Column(UUID(as_uuid=True),ForeignKey('credit_cards.id',ondelete='RESTRICT'),nullable=True)
+    merchant_key = Column(String(255),nullable=True)
+    next_due_date = Column(Date,nullable=True)
+    card = relationship('CreditCard')
     description = Column(String(255), nullable=False)
     type = Column(String(20), nullable=False)  # RECEITA, DESPESA
     amount = Column(Numeric(12, 2), nullable=False)

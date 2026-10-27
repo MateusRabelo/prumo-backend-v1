@@ -11,6 +11,8 @@ class ImportSelection(BaseModel):
     category_id: Optional[UUID] = None
     remember: bool = False
     import_installment: bool = False
+    import_subscription: bool = False
+    subscription_frequency: Literal["MONTHLY","YEARLY","WEEKLY"] = "MONTHLY"
 
     @field_validator('description')
     @classmethod
