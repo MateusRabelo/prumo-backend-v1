@@ -35,10 +35,15 @@ router = APIRouter(prefix="/transactions", tags=["Transações"])
 
 
 def transaction_to_schema(t: Transaction) -> TransactionResponse:
-    from app.api.v1.cards import MONTH_NAMES
+    from app.api.v1.cards import MONTH_NAMES, get_current_invoice_period
+    period = (t.invoice.year, t.invoice.month) if t.invoice else get_current_invoice_period(t.card, t.date) if t.card and t.payment_mode == 'CREDIT' else None
     return TransactionResponse(
+        is_invoice_payment=t.is_invoice_payment,
+        card_last_digits=t.card.last_digits if t.card else None,
+        invoice_year=period[0] if period else None,
+        invoice_month=period[1] if period else None,
         invoice_id=t.invoice_id,
-        invoice_label=f"{MONTH_NAMES[t.invoice.month - 1]} / {t.invoice.year}" if t.invoice else None,
+        invoice_label=f"{MONTH_NAMES[period[1] - 1]} / {period[0]}" if period else None,
         id=t.id,
         family_id=t.family_id,
         created_by_id=t.created_by_id,

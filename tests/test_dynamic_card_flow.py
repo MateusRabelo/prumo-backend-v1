@@ -25,6 +25,9 @@ def test_credit_debit_and_installments_share_correct_account_and_invoice(client,
     credit = post('/transactions',{**base,'payment_mode':'CREDIT'})
     assert credit['account_id'] == account['id'] and credit['invoice_id']
     assert 'Novembro' in credit['invoice_label']
+    assert credit['invoice_year']==2026 and credit['invoice_month']==11
+    assert not credit['is_invoice_payment']
+    assert credit['card_name']=='Nu'
     debit = post('/transactions',{**base,'payment_mode':'DEBIT'})
     assert debit['invoice_id'] is None
     accounts = client.get(P+'/settings/accounts',headers=auth_headers).json()

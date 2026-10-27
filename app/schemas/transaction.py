@@ -44,6 +44,10 @@ class TransactionUpdate(BaseModel):
 
 
 class TransactionResponse(BaseModel):
+    is_invoice_payment: bool = False
+    card_last_digits: Optional[str] = None
+    invoice_year: Optional[int] = None
+    invoice_month: Optional[int] = None
     invoice_id: Optional[UUID] = None
     invoice_label: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
