@@ -194,6 +194,7 @@ def create_transaction(
         account_id=data.account_id,
         destination_account_id=data.destination_account_id,
         card_id=data.card_id,
+        invoice_id=data.invoice_id,
         responsible_name=data.responsible_name,
         is_shared=data.is_shared,
         classification=data.classification,

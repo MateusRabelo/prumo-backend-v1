@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Header, status
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_, false
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_family, get_current_user, get_admin_family
 from app.models.card import CreditCard
@@ -28,6 +28,12 @@ MONTH_NAMES = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
 ]
+
+
+def invoice_transactions(invoice, start_date, closing_date):
+    """Explicit statement assignment wins over date-derived cycles."""
+    return or_(Transaction.invoice_id == invoice.id if invoice else false(),
+               and_(Transaction.invoice_id.is_(None), Transaction.date >= start_date, Transaction.date <= closing_date))
 
 
 def get_invoice_cycle_dates(card: CreditCard, year: int, month: int):
@@ -125,28 +131,14 @@ def compute_card_limits(db: Session, card: CreditCard):
     today = date.today()
     cur_year, cur_month = get_current_invoice_period(card, today)
     start_date, closing_date, due_date = get_invoice_cycle_dates(card, cur_year, cur_month)
-    cur_txs = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.card_id == card.id,
-        Transaction.date >= start_date,
-        Transaction.date <= closing_date,
-        Transaction.type == "DESPESA",
-        Transaction.is_deleted == False,
-        Transaction.is_invoice_payment == False,
-        Transaction.installment_id.is_(None)
-    ).scalar()
-    cur_insts = db.query(func.coalesce(func.sum(Installment.amount), 0)).join(InstallmentPlan).filter(
-        InstallmentPlan.card_id == card.id,
-        Installment.due_date >= date(cur_year, cur_month, 1),
-        Installment.due_date <= date(cur_year, cur_month, calendar.monthrange(cur_year, cur_month)[1]),
-        Installment.status != "CANCELADA"
-    ).scalar()
-    current_invoice = (Decimal(str(cur_txs)) + Decimal(str(cur_insts))).quantize(Decimal("0.01"))
+    current_invoice = build_invoice_response(db, card, cur_year, cur_month).total_amount
 
     return used, avail, current_invoice
 
 
 def build_invoice_response(db: Session, card: CreditCard, year: int, month: int) -> CardInvoiceResponse:
     start_date, closing_date, due_date = get_invoice_cycle_dates(card, year, month)
+    default_start_date, default_closing_date = start_date, closing_date
     period_label = f"{MONTH_NAMES[month - 1]} / {year}"
 
     # Query saved invoice if exists
@@ -156,16 +148,24 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
         CardInvoice.month == month
     ).first()
 
+    if saved_invoice:
+        closing_date, due_date = saved_invoice.closing_date, saved_invoice.due_date
+        previous_month = closing_date.month - 1 or 12
+        previous_year = closing_date.year - (1 if closing_date.month == 1 else 0)
+        start_date = date(previous_year, previous_month, min(closing_date.day, calendar.monthrange(previous_year, previous_month)[1])) + timedelta(days=1)
+
     # Transactions in this invoice cycle
     txs = db.query(Transaction).filter(
         Transaction.card_id == card.id,
-        Transaction.date >= start_date,
-        Transaction.date <= closing_date,
+        invoice_transactions(saved_invoice, default_start_date, default_closing_date),
         Transaction.type == "DESPESA",
         Transaction.is_deleted == False,
         Transaction.is_invoice_payment == False,
         Transaction.installment_id.is_(None)
     ).order_by(Transaction.date.asc()).all()
+
+    if txs:
+        start_date = min(start_date, min(t.date for t in txs))
 
     # Installment parcels falling into this invoice
     insts = db.query(Installment).join(InstallmentPlan).filter(
@@ -715,8 +715,7 @@ def pay_card_invoice(
     # 3. Link card expenses in this cycle to this invoice
     cycle_txs = db.query(Transaction).filter(
         Transaction.card_id == card.id,
-        Transaction.date >= start_date,
-        Transaction.date <= closing_date,
+        invoice_transactions(invoice_record, start_date, closing_date),
         Transaction.type == "DESPESA",
         Transaction.is_deleted == False,
         Transaction.is_invoice_payment == False,

@@ -23,4 +23,5 @@ class ImportSelection(BaseModel):
 class ImportConfirm(BaseModel):
     preview_token: str = Field(max_length=800_000)
     reviewed: Literal[True]
+    reconciliation_reviewed: bool = False
     entries: list[ImportSelection] = Field(min_length=1, max_length=500)

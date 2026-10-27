@@ -27,6 +27,7 @@ from app.models.user import User
 from app.schemas.statement_import import ImportConfirm
 from app.services.audit_service import AuditService
 from app.services.statement_parser import normalize, parse_statement
+from app.services.pdf_statement import statement_summary
 
 router = APIRouter(prefix='/imports', tags=['Importação de extratos'])
 _pdf_lock = asyncio.Semaphore(1)
@@ -105,6 +106,11 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
         rows, warnings = parse_statement(text, extension, reference, card=bool(card_id))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
+    statement = statement_summary(text, rows) if extension == 'pdf' else None
+    if statement and not card_id:
+        raise HTTPException(422, detail='Este PDF é uma fatura de cartão. Selecione Fatura de cartão de crédito e o cartão correspondente.')
+    if statement and statement['totals_match'] is False:
+        warnings.append('Os valores reconhecidos não fecham com o resumo do PDF. A confirmação ficará bloqueada para evitar uma importação incompleta.')
     rules = {rule.merchant_key: rule for rule in db.query(ImportMerchantRule).filter_by(family_id=family.id).all()}
     keys = [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows]
     existing = {value for (value,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(keys)).all()}
@@ -120,15 +126,15 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
     for row, key in zip(rows, keys):
         rule = rules.get(normalize(row['original_description']))
         description = rule.display_name if rule else row['original_description']
-        if card and get_current_invoice_period(card, date.fromisoformat(row['date'])) in paid_periods:
+        if card and ((statement['year'], statement['month']) if statement else get_current_invoice_period(card, date.fromisoformat(row['date']))) in paid_periods:
             row['blocked'], row['warning'] = True, 'Fatura com pagamento: composição protegida. Faça o ajuste pelo fluxo de estorno.'
         output.append({**row, 'description': description, 'category_id': str(rule.category_id) if rule and rule.category_id else None,
                        'learned': bool(rule), 'duplicate': key in existing,
                        'possible_duplicate': (row['date'], row['amount'], normalize(description)) in prior_values})
     token = jwt.encode({'purpose': 'statement_preview', 'sub': str(user.id), 'family': str(family.id),
-        'account': str(account_id), 'card': str(card_id) if card_id else None, 'rows': rows,
+        'account': str(account_id), 'card': str(card_id) if card_id else None, 'rows': rows, 'statement': statement,
         'iat': now, 'exp': now + timedelta(minutes=30)}, settings.SECRET_KEY, algorithm='HS256')
-    return {'preview_token': token, 'rows': output, 'warnings': warnings,
+    return {'preview_token': token, 'rows': output, 'warnings': warnings, 'statement': statement,
             'notice': 'Confira com o arquivo original. Saldos, totais e linhas não reconhecidas não são importados. Nenhum lançamento foi salvo.'}
 
 
@@ -141,6 +147,11 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         raise HTTPException(400, detail='A prévia expirou ou é inválida. Envie o arquivo novamente.')
     if payload.get('purpose') != 'statement_preview' or payload.get('sub') != str(user.id) or payload.get('family') != str(family.id):
         raise HTTPException(403, detail='Esta prévia pertence a outra conta ou espaço.')
+    statement = payload.get('statement')
+    if statement and statement['totals_match'] is False:
+        raise HTTPException(409, detail='A leitura não fecha com o resumo do PDF. Nenhum lançamento foi salvo. Precisamos revisar este layout.')
+    if statement and statement['requires_reconciliation'] and not data.reconciliation_reviewed:
+        raise HTTPException(400, detail='Confira o resumo e reconheça que pagamentos e estornos precisam ser conciliados separadamente.')
     account_id = UUID(payload['account'])
     card_id = UUID(payload['card']) if payload['card'] else None
     _, card = target(db, family.id, account_id, card_id, lock=True)
@@ -154,13 +165,16 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
     existing = {key for (key,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(
         [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows])).all()}
     imported, skipped = 0, 0
+    statement_invoice = None
+    if statement and card:
+        statement_invoice = db.query(CardInvoice).filter_by(card_id=card.id, year=statement['year'], month=statement['month']).first()
     for entry in data.entries:
         if entry.index >= len(rows):
             raise HTTPException(400, detail='Linha fora da prévia original.')
         row = rows[entry.index]
         if row['blocked']:
             raise HTTPException(400, detail='A seleção contém uma linha que exige tratamento manual.')
-        if card and (entry.type != 'DESPESA' or get_current_invoice_period(card, date.fromisoformat(row['date'])) in paid_periods):
+        if card and (entry.type != 'DESPESA' or ((statement['year'], statement['month']) if statement else get_current_invoice_period(card, date.fromisoformat(row['date']))) in paid_periods):
             raise HTTPException(409, detail='Cartão exige despesa e fatura sem pagamento. Atualize a prévia.')
         if row['type'] and row['type'] != entry.type:
             raise HTTPException(400, detail='O tipo difere do sinal identificado no arquivo.')
@@ -171,9 +185,22 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         if key in existing:
             skipped += 1
             continue
+        if statement and card and statement_invoice is None:
+            from app.api.v1.cards import get_invoice_cycle_dates
+            _, closing, _ = get_invoice_cycle_dates(card, statement['year'], statement['month'])
+            if statement.get('closing_date'):
+                closing = date.fromisoformat(statement['closing_date'])
+            statement_invoice = CardInvoice(family_id=family.id, card_id=card.id, year=statement['year'], month=statement['month'],
+                closing_date=closing, due_date=date.fromisoformat(statement['due_date']), total_amount=Decimal('0.00'), paid_amount=Decimal('0.00'), status='ABERTA')
+            db.add(statement_invoice)
+            db.flush()
+        if statement and statement_invoice:
+            if statement.get('closing_date'):
+                statement_invoice.closing_date = date.fromisoformat(statement['closing_date'])
+            statement_invoice.due_date = date.fromisoformat(statement['due_date'])
         transaction = Transaction(family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
             description=entry.description, type=entry.type, amount=Decimal(row['amount']), account_id=account_id,
-            card_id=card_id, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
+            card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
             responsible_name=card.responsible_name or 'Família' if card else 'Família', is_shared=True,
             status='REALIZADA', idempotency_key=key, notes='Importado de extrato. Descrição original: ' + row['original_description'])
         db.add(transaction)

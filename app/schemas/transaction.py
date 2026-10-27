@@ -15,6 +15,7 @@ class TransactionCreate(BaseModel):
     account_id: UUID
     destination_account_id: Optional[UUID] = None
     card_id: Optional[UUID] = None
+    invoice_id: Optional[UUID] = None
     responsible_name: str = Field(..., min_length=1, max_length=100)
     is_shared: bool = False
     classification: str = Field(default="NECESSIDADE", pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")

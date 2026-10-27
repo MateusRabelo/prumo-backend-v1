@@ -30,3 +30,13 @@ O importador usa chaves estáveis por conta ou cartão e identificador bancário
 Pagamentos e créditos de cartão precisam dos fluxos de pagamento/estorno e não viram compras importadas. Possíveis parcelas vêm desmarcadas; quem já cadastrou o parcelamento deve manter essas linhas fora da importação. Transferências internas entre contas devem usar o fluxo de transferência, não receita/despesa. Importações em faturas com pagamento são recusadas, inclusive se o pagamento ocorrer entre prévia e confirmação.
 
 A nova tabela import_merchant_rules é criada por Alembic, com RLS ativado e acesso público revogado. Todas as operações da API validam o espaço familiar. A confirmação é transacional: erros impedem a gravação do lote inteiro.
+
+## Faturas Nubank
+
+O leitor reconhece datas abreviadas como “30 SET”, o ano indicado no cabeçalho, sinais monetários Unicode e descrições quebradas em linhas. O número mascarado do cartão é removido do nome do estabelecimento. Somente as linhas de transações entram na prévia; totais de simulações, limites e próximas faturas não são confundidos com compras.
+
+A prévia mostra o resumo do PDF e compara compras, créditos/estornos, pagamentos e total devido. Se as somas reconhecidas não fecharem, a confirmação é bloqueada no servidor. Pagamentos, créditos e saldo anterior não geram movimentações automaticamente: a interface exige ciência da conciliação separada. Uma compra com estorno integral do mesmo nome e valor, identificado sem ambiguidade no arquivo, vem desmarcada para não somar despesa cancelada.
+
+As compras confirmadas são vinculadas explicitamente ao cartão e mês indicados na fatura. A atribuição prevalece sobre a data calculada pelo fechamento cadastrado, inclusive compras no dia limítrofe do ciclo. Antes de haver pagamento, continuam editáveis/excluíveis; após pagamento, a composição permanece protegida.
+
+Regressões permanentes usam exemplos sintéticos do layout. Os PDFs reais podem ser verificados localmente com NUBANK_SAMPLE_DIR, mas nunca são versionados no Git.

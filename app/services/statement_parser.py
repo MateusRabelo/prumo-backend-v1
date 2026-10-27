@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 
 MAX_ROWS = 500
 DATE = re.compile(r'^\s*(\d{2}/\d{2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2})\s+(.+)$')
-MONEY = re.compile(r'(?<![\w/])(?:R\$\s*)?[-+]?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)[,.]\d{2}(?:\s*[DC-])?(?![\d/])', re.I)
+MONEY = re.compile(r'(?<![\w/])(?:[-+]\s*)?(?:R\$\s*)?[-+]?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)[,.]\d{2}(?:\s*[DC-])?(?![\d/])', re.I)
 
 
 def normalize(value):
@@ -54,6 +54,11 @@ def parse_date(raw, reference):
 def parse_statement(text, kind, reference, card=False):
     candidates, warnings = [], []
     if kind == 'pdf':
+        from app.services.pdf_statement import clean_pdf_text, named_pdf_candidates
+        text = clean_pdf_text(text)
+        named, notices = named_pdf_candidates(text, reference, MONEY)
+        candidates.extend(named)
+        warnings.extend(notices)
         for line_number, line in enumerate(text.splitlines(), 1):
             match = DATE.match(line)
             if not match:
@@ -121,6 +126,9 @@ def parse_statement(text, kind, reference, card=False):
                 warning, blocked = 'Pagamento de fatura: registre em Faturas, escolhendo a conta bancária.', True
             elif direction is None:
                 warning = 'Confirme se este valor é uma entrada ou saída. O arquivo não informa o sinal com clareza.'
+            entry_kind = 'purchase' if card else 'transaction'
+            if card and blocked:
+                entry_kind = 'payment' if re.search(r'\bpagamento\b', normalize(description)) else 'refund' if 'estorno' in normalize(description) else 'credit'
             installment_hint = card and bool(re.search(r'\b\d{1,2}/\d{1,2}\b', description))
             if installment_hint and not blocked:
                 warning = 'Possível parcela: se o parcelamento já existe no Prumo, não importe esta linha novamente.'
@@ -129,10 +137,20 @@ def parse_statement(text, kind, reference, card=False):
             # FITID is already a bank-provided unique ID; repeated FITID must deduplicate.
             key = identity if external_id else f'{identity}|{occurrence[identity]}'
             rows.append(dict(index=len(rows), date=str(parsed_date), original_description=description, amount=str(abs(amount)),
-                             type=direction, warning=warning, blocked=blocked, possible_installment=bool(installment_hint),
+                             type=direction, entry_kind=entry_kind, warning=warning, blocked=blocked, possible_installment=bool(installment_hint),
                              fingerprint=hashlib.sha256(key.encode()).hexdigest()))
         except (ValueError, InvalidOperation):
             warnings.append(f'{location}: não foi possível interpretar data ou valor. Confira esse lançamento manualmente.')
+    if card:
+        for refund in rows:
+            if refund['entry_kind'] != 'refund':
+                continue
+            merchant = re.sub(r'^estorno\s+de\s+', '', refund['original_description'], flags=re.I).strip(' \"“”')
+            matches = [r for r in rows if r['entry_kind'] == 'purchase' and r['amount'] == refund['amount']
+                       and normalize(r['original_description']) == normalize(merchant)]
+            if len(matches) == 1 and not matches[0].get('refunded_in_statement'):
+                matches[0]['refunded_in_statement'] = True
+                matches[0]['warning'] = 'Compra com estorno integral identificado neste PDF. Vem desmarcada para não somar uma despesa cancelada.'
     if not rows:
-        raise ValueError('Nenhum lançamento reconhecido. O PDF precisa ter data, descrição e valor na mesma linha. Exporte em CSV/OFX se o layout for diferente.')
+        raise ValueError('Não foi possível reconhecer os lançamentos deste arquivo. Nenhum dado foi salvo. Confira se o PDF contém texto selecionável; se persistir, envie um exemplo para ajustarmos o leitor.')
     return rows, warnings[:100]
