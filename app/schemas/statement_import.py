@@ -10,6 +10,7 @@ class ImportSelection(BaseModel):
     type: Literal['RECEITA', 'DESPESA']
     category_id: Optional[UUID] = None
     remember: bool = False
+    import_installment: bool = False
 
     @field_validator('description')
     @classmethod

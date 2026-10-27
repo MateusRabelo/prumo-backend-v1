@@ -173,6 +173,9 @@ class ResponsibleUpdate(BaseModel):
 
 
 class ResponsibleResponse(BaseModel):
+    user_id: Optional[UUID] = None
+    is_system: bool = False
+    is_current_user: bool = False
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

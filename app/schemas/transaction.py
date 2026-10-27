@@ -12,8 +12,9 @@ class TransactionCreate(BaseModel):
     type: str = Field(..., pattern="^(RECEITA|DESPESA|TRANSFERENCIA)$")
     amount: Decimal = Field(..., gt=Decimal("0.00"))
     category_id: Optional[UUID] = None
-    account_id: UUID
+    account_id: Optional[UUID] = None
     destination_account_id: Optional[UUID] = None
+    payment_mode: str = Field(default="ACCOUNT", pattern="^(ACCOUNT|CREDIT|DEBIT)$")
     card_id: Optional[UUID] = None
     invoice_id: Optional[UUID] = None
     responsible_name: str = Field(..., min_length=1, max_length=100)
@@ -32,6 +33,7 @@ class TransactionUpdate(BaseModel):
     category_id: Optional[UUID] = None
     account_id: Optional[UUID] = None
     destination_account_id: Optional[UUID] = None
+    payment_mode: Optional[str] = Field(None, pattern="^(ACCOUNT|CREDIT|DEBIT)$")
     card_id: Optional[UUID] = None
     responsible_name: Optional[str] = None
     is_shared: Optional[bool] = None
@@ -42,6 +44,8 @@ class TransactionUpdate(BaseModel):
 
 
 class TransactionResponse(BaseModel):
+    invoice_id: Optional[UUID] = None
+    invoice_label: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -58,6 +62,7 @@ class TransactionResponse(BaseModel):
     account_name: Optional[str] = None
     destination_account_id: Optional[UUID] = None
     destination_account_name: Optional[str] = None
+    payment_mode: str = "ACCOUNT"
     card_id: Optional[UUID] = None
     card_name: Optional[str] = None
     responsible_name: str

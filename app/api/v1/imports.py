@@ -19,7 +19,8 @@ from app.models.account import FinancialAccount
 from app.models.card import CreditCard
 from app.models.category import Category
 from app.models.family import FamilySpace
-from app.models.import_rule import ImportMerchantRule
+from app.models.import_rule import ImportMerchantRule, StatementImportLink
+from app.services.import_installments import merchant_key, merchant_name, find_plan, apply_parcel
 from app.models.invoice import CardInvoice
 from app.models.security import RateLimitBucket
 from app.models.transaction import Transaction
@@ -44,6 +45,10 @@ def target(db, family_id, account_id, card_id, lock=False):
     account = (query.with_for_update() if lock else query).first()
     if not account or account.account_type not in ('CHECKING', 'SAVINGS', 'WALLET'):
         raise HTTPException(400, detail='Selecione uma conta corrente, poupança ou carteira deste espaço.')
+    if lock and card and card.account_id and card.account_id != account.id:
+        raise HTTPException(400, detail='A conta deve ser a conta vinculada ao cartão')
+    if lock and card and not card.account_id:
+        card.account_id = account.id
     return account, card
 
 
@@ -111,9 +116,24 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
         raise HTTPException(422, detail='Este PDF é uma fatura de cartão. Selecione Fatura de cartão de crédito e o cartão correspondente.')
     if statement and statement['totals_match'] is False:
         warnings.append('Os valores reconhecidos não fecham com o resumo do PDF. A confirmação ficará bloqueada para evitar uma importação incompleta.')
+    detected_card = None
+    if card_id:
+        digits = statement.get('card_last_digits', []) if statement else []
+        choices = db.query(CreditCard).filter(CreditCard.family_id == family.id, CreditCard.is_active == True,
+            CreditCard.card_type.in_(['CREDIT','MULTIPLE']), CreditCard.last_digits.in_(digits)).all() if len(digits) == 1 else []
+        if len(choices) == 1:
+            card_id = choices[0].id
+            detected_card = {'id': str(card_id), 'name': choices[0].name, 'last_digits': choices[0].last_digits}
+        _, resolved = target(db, family.id, account_id, card_id)
+        if resolved.account_id:
+            account_id = resolved.account_id
+            target(db, family.id, account_id, card_id)
+        if digits and resolved.last_digits and resolved.last_digits not in digits:
+            raise HTTPException(422, detail='O final do cartão selecionado não corresponde ao PDF. Escolha o cartão correto.')
     rules = {rule.merchant_key: rule for rule in db.query(ImportMerchantRule).filter_by(family_id=family.id).all()}
     keys = [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows]
     existing = {value for (value,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(keys)).all()}
+    existing |= {value for (value,) in db.query(StatementImportLink.key).filter(StatementImportLink.key.in_(keys)).all()}
     # Existing manual entries can only be suggested as duplicates, never silently discarded.
     dates = [date.fromisoformat(row['date']) for row in rows]
     prior = db.query(Transaction).filter(Transaction.family_id == family.id, Transaction.account_id == account_id if not card_id else True,
@@ -124,17 +144,28 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
     from app.api.v1.cards import get_current_invoice_period
     output = []
     for row, key in zip(rows, keys):
-        rule = rules.get(normalize(row['original_description']))
+        rule = rules.get(merchant_key(row['original_description'])) or rules.get(normalize(row['original_description']))
         description = rule.display_name if rule else row['original_description']
         if card and ((statement['year'], statement['month']) if statement else get_current_invoice_period(card, date.fromisoformat(row['date']))) in paid_periods:
             row['blocked'], row['warning'] = True, 'Fatura com pagamento: composição protegida. Faça o ajuste pelo fluxo de estorno.'
-        output.append({**row, 'description': description, 'category_id': str(rule.category_id) if rule and rule.category_id else None,
+        matched = None
+        if card and row.get('installment_info') and not row['blocked']:
+            try:
+                matched = find_plan(db, family.id, card.id, row, description)
+                if matched:
+                    parcel = next(i for i in matched.installments if i.installment_number == row['installment_info']['number'])
+                    if parcel.status != 'PENDENTE' or db.query(StatementImportLink.key).filter_by(installment_id=parcel.id).first():
+                        existing.add(key)
+                    row['installment_info']['matching_plan_id'] = str(matched.id)
+            except HTTPException as exc:
+                row['blocked'], row['warning'] = True, exc.detail
+        output.append({**row, 'description': description, 'category_id': str(matched.category_id) if matched else str(rule.category_id) if rule and rule.category_id else None,
                        'learned': bool(rule), 'duplicate': key in existing,
                        'possible_duplicate': (row['date'], row['amount'], normalize(description)) in prior_values})
     token = jwt.encode({'purpose': 'statement_preview', 'sub': str(user.id), 'family': str(family.id),
         'account': str(account_id), 'card': str(card_id) if card_id else None, 'rows': rows, 'statement': statement,
         'iat': now, 'exp': now + timedelta(minutes=30)}, settings.SECRET_KEY, algorithm='HS256')
-    return {'preview_token': token, 'rows': output, 'warnings': warnings, 'statement': statement,
+    return {'preview_token': token, 'rows': output, 'warnings': warnings, 'statement': statement, 'detected_card': detected_card, 'resolved_card_id': str(card_id) if card_id else None, 'resolved_account_id': str(account_id),
             'notice': 'Confira com o arquivo original. Saldos, totais e linhas não reconhecidas não são importados. Nenhum lançamento foi salvo.'}
 
 
@@ -164,6 +195,9 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
     paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, CardInvoice.paid_amount > 0).all()} if card_id else set()
     existing = {key for (key,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(
         [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows])).all()}
+    existing |= {value for (value,) in db.query(StatementImportLink.key).filter(StatementImportLink.key.in_([dedupe_key(family.id, account_id, card_id, r['fingerprint']) for r in rows])).all()}
+    from app.models.family import FamilyMembership
+    actor = db.query(FamilyMembership).filter_by(family_id=family.id, user_id=user.id).one().alias_name
     imported, skipped = 0, 0
     statement_invoice = None
     if statement and card:
@@ -198,19 +232,40 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
             if statement.get('closing_date'):
                 statement_invoice.closing_date = date.fromisoformat(statement['closing_date'])
             statement_invoice.due_date = date.fromisoformat(statement['due_date'])
+        if card and entry.import_installment:
+            if not row.get('installment_info'):
+                raise HTTPException(400, detail='Não há parcela identificada nesta linha')
+            parcel_invoice = statement_invoice
+            if parcel_invoice is None:
+                from app.services.card_flow import ensure_invoice
+                parcel_invoice = ensure_invoice(db, family.id, card, date.fromisoformat(row['date']))
+            matched = find_plan(db, family.id, card.id, row, entry.description)
+            current = next((i for i in matched.installments if i.installment_number == row['installment_info']['number']), None) if matched else None
+            if current and (current.status != 'PENDENTE' or db.query(StatementImportLink.key).filter_by(installment_id=current.id).first()):
+                db.add(StatementImportLink(key=key, family_id=family.id, installment_id=current.id))
+                existing.add(key); skipped += 1
+                continue
+            parcel, changed = apply_parcel(db, family, user, account_id, card, row, entry, category, parcel_invoice)
+            db.add(StatementImportLink(key=key, family_id=family.id, installment_id=parcel.id))
+            existing.add(key); imported += 1
+            if entry.remember and merchant_key(row['original_description']):
+                db.execute(insert(ImportMerchantRule).values(family_id=family.id, merchant_key=merchant_key(row['original_description']),
+                    display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc)).on_conflict_do_update(
+                    constraint='uq_import_merchant_family', set_={'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
+            continue
         transaction = Transaction(family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
             description=entry.description, type=entry.type, amount=Decimal(row['amount']), account_id=account_id,
-            card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
-            responsible_name=card.responsible_name or 'Família' if card else 'Família', is_shared=True,
+            payment_mode="CREDIT" if card_id else "ACCOUNT", card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
+            responsible_name=card.responsible_name or actor if card else actor, is_shared=bool(card and card.responsible_name == 'Conjunto'),
             status='REALIZADA', idempotency_key=key, notes='Importado de extrato. Descrição original: ' + row['original_description'])
         db.add(transaction)
         existing.add(key)
         imported += 1
         if entry.remember and normalize(row['original_description']):
-            db.execute(insert(ImportMerchantRule).values(family_id=family.id, merchant_key=normalize(row['original_description']),
-                display_name=entry.description, category_id=entry.category_id, updated_at=datetime.now(timezone.utc))
+            db.execute(insert(ImportMerchantRule).values(family_id=family.id, merchant_key=merchant_key(row['original_description']),
+                display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc))
                 .on_conflict_do_update(constraint='uq_import_merchant_family', set_={
-                    'display_name': entry.description, 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
+                    'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
     AuditService.log(db, family.id, user.id, 'IMPORT_STATEMENT', 'ACCOUNT', str(account_id),
                      new_values={'imported': imported, 'skipped': skipped, 'card_id': str(card_id) if card_id else None})
     db.commit()

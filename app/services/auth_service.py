@@ -95,10 +95,8 @@ class AuthService:
                 is_active=True
             ))
 
-        # 6. Create the user and a shared responsible
-        first_name = data.full_name.split()[0]
-        db.add(ResponsiblePerson(family_id=family.id, name=first_name, is_shared=False, is_active=True))
-        db.add(ResponsiblePerson(family_id=family.id, name="Conjunto", is_shared=True, is_active=True))
+        from app.services.responsibles import sync_responsibles
+        sync_responsibles(db, family.id)
 
         # 7. Create Default Account
         db.add(FinancialAccount(

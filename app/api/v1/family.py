@@ -169,6 +169,8 @@ def accept_invitation(
     )
     db.add(new_member)
     invitation.status = "ACCEPTED"
+    from app.services.responsibles import sync_responsibles
+    sync_responsibles(db, invitation.family_id)
     db.commit()
 
     return db.query(FamilySpace).filter(FamilySpace.id == invitation.family_id).first()

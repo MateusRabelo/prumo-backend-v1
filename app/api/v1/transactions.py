@@ -35,7 +35,10 @@ router = APIRouter(prefix="/transactions", tags=["Transações"])
 
 
 def transaction_to_schema(t: Transaction) -> TransactionResponse:
+    from app.api.v1.cards import MONTH_NAMES
     return TransactionResponse(
+        invoice_id=t.invoice_id,
+        invoice_label=f"{MONTH_NAMES[t.invoice.month - 1]} / {t.invoice.year}" if t.invoice else None,
         id=t.id,
         family_id=t.family_id,
         created_by_id=t.created_by_id,
@@ -50,6 +53,7 @@ def transaction_to_schema(t: Transaction) -> TransactionResponse:
         account_name=t.account.name if t.account else None,
         destination_account_id=t.destination_account_id,
         destination_account_name=t.destination_account.name if t.destination_account else None,
+        payment_mode=t.payment_mode,
         card_id=t.card_id,
         card_name=t.card.name if t.card else None,
         responsible_name=t.responsible_name,
@@ -156,7 +160,11 @@ def create_transaction(
     current_family: FamilySpace = Depends(get_current_family),
     db: Session = Depends(get_db)
 ) -> Any:
-    validate_relations(db, current_family.id, data.model_dump())
+    from app.services.card_flow import resolve_card_flow, ensure_invoice
+    values = data.model_dump()
+    card = resolve_card_flow(db, current_family.id, values)
+    data = data.model_copy(update=values)
+    validate_relations(db, current_family.id, values)
     validate_card_periods(db, current_family.id, data.model_dump())
     validate_transaction(data.model_dump())
     # Validate account belongs to current family
@@ -183,7 +191,10 @@ def create_transaction(
         if not category:
             raise HTTPException(status_code=400, detail="Categoria inválida")
 
+    if card and data.payment_mode == 'CREDIT' and not data.invoice_id:
+        data = data.model_copy(update={'invoice_id': ensure_invoice(db, current_family.id, card, data.date).id})
     transaction = Transaction(
+        payment_mode=data.payment_mode,
         family_id=current_family.id,
         created_by_id=current_user.id,
         date=data.date,
@@ -264,6 +275,10 @@ def update_transaction(
     protect_linked_transaction(db, transaction)
     merged = {column.name: getattr(transaction, column.name) for column in Transaction.__table__.columns}
     merged.update(data.model_dump(exclude_unset=True))
+    from app.services.card_flow import resolve_card_flow, ensure_invoice
+    if transaction.invoice_id and data.payment_mode == 'DEBIT':
+        raise HTTPException(409, detail='Uma compra já vinculada à fatura não pode virar débito')
+    card = resolve_card_flow(db, current_family.id, merged)
     validate_relations(db, current_family.id, merged)
     validate_transaction(merged)
     validate_card_periods(db, current_family.id, merged)
@@ -271,6 +286,9 @@ def update_transaction(
     old_values = transaction_snapshot(transaction)
 
     update_dict = data.model_dump(exclude_unset=True)
+    update_dict.update({'account_id': merged['account_id'], 'payment_mode': merged['payment_mode']})
+    if card and merged['payment_mode'] == 'CREDIT' and not merged.get('invoice_id'):
+        update_dict['invoice_id'] = ensure_invoice(db, current_family.id, card, merged['date']).id
     for key, value in update_dict.items():
         setattr(transaction, key, value)
 
@@ -357,6 +375,7 @@ def duplicate_transaction(
         account_id=original.account_id,
         destination_account_id=original.destination_account_id,
         card_id=original.card_id,
+        payment_mode=original.payment_mode,
         responsible_name=original.responsible_name,
         is_shared=original.is_shared,
         classification=original.classification,

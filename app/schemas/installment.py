@@ -38,11 +38,12 @@ class InstallmentPlanCreate(BaseModel):
     total_amount: Decimal = Field(..., gt=Decimal("0.00"))
     installments_count: int = Field(..., ge=1, le=120)
     purchase_date: date = Field(default_factory=date.today)
-    first_due_date: date
+    first_due_date: Optional[date] = None
     notes: Optional[str] = None
 
 
 class InstallmentPlanResponse(BaseModel):
+    imported_from_number: int = 1
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

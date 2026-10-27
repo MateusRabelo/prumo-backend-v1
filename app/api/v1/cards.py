@@ -117,6 +117,7 @@ def compute_card_limits(db: Session, card: CreditCard):
         Transaction.status.in_(["PENDENTE", "REALIZADA", "VENCIDA"]),
         Transaction.installment_id.is_(None),
         Transaction.is_invoice_payment == False,
+        Transaction.payment_mode == "CREDIT",
         Transaction.is_deleted == False,
         (Transaction.invoice_id.is_(None) | (CardInvoice.status != "PAGA"))
     ).scalar()
@@ -161,6 +162,7 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
         Transaction.type == "DESPESA",
         Transaction.is_deleted == False,
         Transaction.is_invoice_payment == False,
+        Transaction.payment_mode == "CREDIT",
         Transaction.installment_id.is_(None)
     ).order_by(Transaction.date.asc()).all()
 
@@ -703,7 +705,7 @@ def pay_card_invoice(
         tx = Transaction(family_id=current_family.id, created_by_id=current_user.id,
             date=inst.due_date, description=f"{inst.plan.description} ({inst.installment_number}/{inst.plan.installments_count})",
             type="DESPESA", amount=inst.amount, category_id=inst.plan.category_id,
-            account_id=data.account_id, card_id=card.id, responsible_name=inst.plan.responsible_name,
+            account_id=inst.plan.account_id or card.account_id or data.account_id, card_id=card.id, payment_mode="CREDIT", responsible_name=inst.plan.responsible_name,
             is_shared=inst.plan.is_shared, classification="NECESSIDADE", status="REALIZADA",
             installment_id=inst.id, invoice_id=invoice_record.id)
         db.add(tx)
@@ -719,9 +721,12 @@ def pay_card_invoice(
         Transaction.type == "DESPESA",
         Transaction.is_deleted == False,
         Transaction.is_invoice_payment == False,
+        Transaction.payment_mode == "CREDIT",
         Transaction.installment_id.is_(None)
     ).all()
     for t in cycle_txs:
+        if fully_paid:
+            t.status = "REALIZADA"
         t.invoice_id = invoice_record.id
 
     invoice_record.total_amount = inv_resp.total_amount

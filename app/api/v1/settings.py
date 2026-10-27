@@ -137,7 +137,7 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
         Transaction.type == "DESPESA",
         Transaction.status == "REALIZADA",
         Transaction.is_deleted == False,
-        (Transaction.card_id.is_(None) | (Transaction.is_invoice_payment == True))
+        ((Transaction.payment_mode != "CREDIT") | (Transaction.is_invoice_payment == True))
     ).scalar()
 
     # Incoming transfers to this account
@@ -328,12 +328,14 @@ def create_payment_method(
 @router.get("/responsibles", response_model=List[ResponsibleResponse])
 def get_responsibles(
     current_family: FamilySpace = Depends(get_current_family),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> Any:
-    return db.query(ResponsiblePerson).filter(
-        ResponsiblePerson.family_id == current_family.id,
-        ResponsiblePerson.is_active == True
-    ).order_by(ResponsiblePerson.name.asc()).all()
+    from app.services.responsibles import sync_responsibles
+    sync_responsibles(db, current_family.id)
+    db.commit()
+    people = db.query(ResponsiblePerson).filter_by(family_id=current_family.id, is_active=True).all()
+    people.sort(key=lambda p: (p.user_id != current_user.id, p.is_shared, p.name))
+    return [ResponsibleResponse.model_validate(p).model_copy(update={'is_current_user': p.user_id == current_user.id}) for p in people]
 
 
 @router.post("/responsibles", response_model=ResponsibleResponse, status_code=status.HTTP_201_CREATED)
@@ -368,6 +370,15 @@ def update_responsible(
     if not responsible:
         raise HTTPException(status_code=404, detail="Responsável não encontrado")
 
+    if responsible.is_system:
+        from app.models.family import FamilyMembership
+        if not responsible.user_id:
+            raise HTTPException(409, detail='Conjunto é gerenciado automaticamente pelos membros do espaço')
+        if data.is_shared or data.is_active is False:
+            raise HTTPException(409, detail='Responsável de um membro ativo não pode ser desativado ou compartilhado')
+        if data.name:
+            membership = db.query(FamilyMembership).filter_by(family_id=current_family.id, user_id=responsible.user_id).one()
+            membership.alias_name = data.name
     update_dict = data.model_dump(exclude_unset=True)
     for key, value in update_dict.items():
         setattr(responsible, key, value)

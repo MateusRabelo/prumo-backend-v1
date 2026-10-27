@@ -50,6 +50,7 @@ def plan_to_schema(plan: InstallmentPlan) -> InstallmentPlanResponse:
     ]
 
     return InstallmentPlanResponse(
+        imported_from_number=plan.imported_from_number,
         id=plan.id,
         family_id=plan.family_id,
         description=plan.description,
@@ -97,7 +98,19 @@ def create_installment_plan(
     current_family: FamilySpace = Depends(get_current_family),
     db: Session = Depends(get_db)
 ) -> Any:
-    validate_relations(db, current_family.id, data.model_dump())
+    from app.services.card_flow import resolve_card_flow
+    from app.api.v1.cards import get_current_invoice_period, get_invoice_cycle_dates
+    values = data.model_dump()
+    card = resolve_card_flow(db, current_family.id, {**values, 'payment_mode': 'CREDIT'}) if data.card_id else None
+    if card:
+        values['account_id'] = card.account_id
+        if not values.get('first_due_date'):
+            year, month = get_current_invoice_period(card, data.purchase_date)
+            values['first_due_date'] = get_invoice_cycle_dates(card, year, month)[2]
+    elif not values.get('first_due_date'):
+        values['first_due_date'] = data.purchase_date
+    data = data.model_copy(update=values)
+    validate_relations(db, current_family.id, values)
     validate_card_periods(db, current_family.id, data.model_dump())
     # Validate category
     category = db.query(Category).filter(

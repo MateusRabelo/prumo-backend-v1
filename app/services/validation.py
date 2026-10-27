@@ -53,7 +53,7 @@ def validate_card_periods(db, family_id, values):
         raise HTTPException(400, detail='Fatura inválida para este espaço')
     if assigned and assigned.card_id != card_id:
         raise HTTPException(409, detail='Compra vinculada a uma fatura não permite trocar o cartão')
-    if not card_id:
+    if not card_id or values.get('payment_mode') == 'DEBIT':
         return
     from app.api.v1.cards import get_current_invoice_period
     from app.domain.recurrence_engine import RecurrenceEngine

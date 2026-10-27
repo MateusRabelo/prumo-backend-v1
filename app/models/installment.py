@@ -21,6 +21,7 @@ class InstallmentPlan(Base):
     responsible_name = Column(String(100), nullable=False)
     is_shared = Column(Boolean, default=False, nullable=False)
     total_amount = Column(Numeric(12, 2), nullable=False)
+    imported_from_number = Column(Integer, default=1, server_default="1", nullable=False)
     installments_count = Column(Integer, nullable=False)
     purchase_date = Column(Date, default=date.today, nullable=False)
     first_due_date = Column(Date, nullable=False)

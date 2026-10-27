@@ -14,3 +14,12 @@ class ImportMerchantRule(Base):
     category_id = Column(UUID(as_uuid=True), ForeignKey('categories.id', ondelete='SET NULL'), nullable=True)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint('family_id', 'merchant_key', name='uq_import_merchant_family'),)
+
+
+class StatementImportLink(Base):
+    __tablename__ = 'statement_import_links'
+    key = Column(String(64), primary_key=True)
+    family_id = Column(UUID(as_uuid=True), ForeignKey('family_spaces.id', ondelete='CASCADE'), nullable=False, index=True)
+    installment_id = Column(UUID(as_uuid=True), ForeignKey('installments.id', ondelete='SET NULL'), nullable=True, index=True)
+    transaction_id = Column(UUID(as_uuid=True), ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

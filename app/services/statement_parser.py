@@ -129,7 +129,11 @@ def parse_statement(text, kind, reference, card=False):
             entry_kind = 'purchase' if card else 'transaction'
             if card and blocked:
                 entry_kind = 'payment' if re.search(r'\bpagamento\b', normalize(description)) else 'refund' if 'estorno' in normalize(description) else 'credit'
-            installment_hint = card and bool(re.search(r'\b\d{1,2}/\d{1,2}\b', description))
+            parcel = re.search(r'\s*(?:-\s*)?Parcela\s+(\d{1,3})\s*/\s*(\d{1,3})\s*$', description, re.I) if card else None
+            installment_info = None
+            if parcel and 1 <= int(parcel[1]) <= int(parcel[2]) <= 120:
+                installment_info = {'number': int(parcel[1]), 'count': int(parcel[2]), 'description': description[:parcel.start()].strip()}
+            installment_hint = bool(installment_info)
             if installment_hint and not blocked:
                 warning = 'Possível parcela: se o parcelamento já existe no Prumo, não importe esta linha novamente.'
             identity = external_id or f'{parsed_date}|{normalize(description)}|{abs(amount)}|{direction}'
@@ -138,7 +142,7 @@ def parse_statement(text, kind, reference, card=False):
             key = identity if external_id else f'{identity}|{occurrence[identity]}'
             rows.append(dict(index=len(rows), date=str(parsed_date), original_description=description, amount=str(abs(amount)),
                              type=direction, entry_kind=entry_kind, warning=warning, blocked=blocked, possible_installment=bool(installment_hint),
-                             fingerprint=hashlib.sha256(key.encode()).hexdigest()))
+                             installment_info=installment_info, fingerprint=hashlib.sha256(key.encode()).hexdigest()))
         except (ValueError, InvalidOperation):
             warnings.append(f'{location}: não foi possível interpretar data ou valor. Confira esse lançamento manualmente.')
     if card:

@@ -20,6 +20,7 @@ class Transaction(Base):
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="SET NULL"), nullable=True)
     account_id = Column(UUID(as_uuid=True), ForeignKey("financial_accounts.id", ondelete="RESTRICT"), nullable=False)
     destination_account_id = Column(UUID(as_uuid=True), ForeignKey("financial_accounts.id", ondelete="RESTRICT"), nullable=True)
+    payment_mode = Column(String(16), default='ACCOUNT', server_default='ACCOUNT', nullable=False)
     card_id = Column(UUID(as_uuid=True), ForeignKey("credit_cards.id", ondelete="SET NULL"), nullable=True)
     responsible_name = Column(String(100), nullable=False)
     is_shared = Column(Boolean, default=False, nullable=False)
@@ -43,6 +44,7 @@ class Transaction(Base):
         CheckConstraint("(type = 'TRANSFERENCIA' AND destination_account_id IS NOT NULL AND destination_account_id <> account_id AND card_id IS NULL) OR (type IN ('RECEITA', 'DESPESA') AND destination_account_id IS NULL)", name="ck_transaction_transfer"),
     )
 
+    invoice = relationship("CardInvoice", foreign_keys=[invoice_id])
     family = relationship("FamilySpace")
     created_by = relationship("User", foreign_keys=[created_by_id])
     category = relationship("Category")

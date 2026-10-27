@@ -89,6 +89,7 @@ def statement_summary(text, rows):
         start_month = MONTHS[cycle[2].upper()]
         cycle_end = date(end_year, end_month, int(cycle[3])).isoformat()
         cycle_start = date(end_year - (1 if start_month > end_month else 0), start_month, int(cycle[1])).isoformat()
+    full_text = text
     section = re.search(r'RESUMO DA FATURA ATUAL(.*?)(?:PR[ÓO]XIMAS FATURAS|LIMITES DISPON[ÍI]VEIS|$)', text, re.S | re.I)
     text = section[1] if section else text
     currency = r'([-+]?\s*R\$\s*[-+]?\s*[\d.]+,\d{2})'
@@ -110,7 +111,7 @@ def statement_summary(text, rows):
         checked.append(credits == abs(Decimal(fields['other_entries'])))
     if fields['amount_due'] is not None and fields['previous_balance'] is not None:
         checked.append(max(Decimal('0'), Decimal(fields['previous_balance']) + charges - credits - payments) == Decimal(fields['amount_due']))
-    return {'issuer': 'Nubank', 'cycle_start_date': cycle_start, 'closing_date': cycle_end, 'due_date': date(int(reference[3]), MONTHS[reference[2].upper()], int(reference[1])).isoformat(), 'year': int(reference[3]), 'month': MONTHS[reference[2].upper()],
+    return {'issuer': 'Nubank', 'card_last_digits': sorted(set(re.findall(r'[•●*]{4}\s*(\d{4})', full_text))), 'cycle_start_date': cycle_start, 'closing_date': cycle_end, 'due_date': date(int(reference[3]), MONTHS[reference[2].upper()], int(reference[1])).isoformat(), 'year': int(reference[3]), 'month': MONTHS[reference[2].upper()],
             **fields, 'recognized_purchases': str(charges), 'recognized_credits': str(credits),
             'recognized_payments': str(payments), 'totals_match': all(checked) if checked else None,
             'requires_reconciliation': bool(credits or payments or Decimal(fields['previous_balance'] or '0'))}
