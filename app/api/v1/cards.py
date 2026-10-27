@@ -789,7 +789,7 @@ def recognize_invoice_installments(db, family, user, card, invoice_record, year,
             date=inst.due_date, description=f"{inst.plan.description} ({inst.installment_number}/{inst.plan.installments_count})",
             type="DESPESA", amount=inst.amount, category_id=inst.plan.category_id,
             account_id=inst.plan.account_id or card.account_id or fallback_account_id, card_id=card.id, payment_mode="CREDIT", responsible_name=inst.plan.responsible_name,
-            is_shared=inst.plan.is_shared, classification="NECESSIDADE", status="REALIZADA",
+            is_shared=inst.plan.is_shared, classification=inst.plan.classification or inst.plan.category.classification, status="REALIZADA",
             installment_id=inst.id, invoice_id=invoice_record.id)
         db.add(tx)
         db.flush()

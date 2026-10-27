@@ -40,6 +40,8 @@ def transaction_to_schema(t: Transaction) -> TransactionResponse:
     return TransactionResponse(
         is_invoice_payment=t.is_invoice_payment,
         card_last_digits=t.card.last_digits if t.card else None,
+        card_bank_name=t.card.bank_name if t.card else None,
+        account_bank_name=t.account.bank_name if t.account else None,
         invoice_year=period[0] if period else None,
         invoice_month=period[1] if period else None,
         invoice_id=t.invoice_id,

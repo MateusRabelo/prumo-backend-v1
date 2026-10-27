@@ -65,7 +65,7 @@ def observe(db,family,user,card,row,entry,category,actor):
         db.add(rule)
     if not rule.last_generated_date or observed>=rule.last_generated_date:
         rule.description=entry.description;rule.amount=Decimal(row['amount']);rule.category_id=category.id
-        rule.account_id=card.account_id;rule.frequency=entry.subscription_frequency
+        rule.account_id=card.account_id;rule.classification=entry.classification or category.classification;rule.frequency=entry.subscription_frequency
         rule.last_generated_date=observed;rule.next_due_date=next_date(observed,rule.frequency,rule.day_of_month)
     db.flush()
     return rule,None

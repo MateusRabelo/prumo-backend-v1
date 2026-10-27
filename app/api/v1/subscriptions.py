@@ -35,7 +35,7 @@ class ChargeInput(BaseModel):
 
 
 def serialize(rule):
-    return {k:getattr(rule,k) for k in ['id','description','amount','account_id','card_id','category_id','frequency','next_due_date','is_active','last_generated_date']}|{'card_name':rule.card.name if rule.card else None,'account_name':rule.account.name,'category_name':rule.category.name}
+    return {k:getattr(rule,k) for k in ['id','description','amount','account_id','card_id','category_id','frequency','next_due_date','is_active','last_generated_date','merchant_key']}|{'card_name':rule.card.name if rule.card else None,'account_name':rule.account.name,'category_name':rule.category.name}
 
 @router.get('')
 def listing(family=Depends(get_current_family),db:Session=Depends(get_db)):

@@ -66,6 +66,8 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
         plan.account_id = account_id
         if category:
             plan.category_id = category.id
+        if entry.classification and (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set):
+            plan.classification = entry.classification
         plan.description = merchant_name(entry.description)
         return parcel, True
     if not category:
@@ -79,7 +81,7 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
     member = db.query(FamilyMembership).filter_by(family_id=family.id, user_id=user.id).one()
     name = merchant_name(entry.description)
     plan = InstallmentPlan(family_id=family.id, created_by_id=user.id, description=name,
-        category_id=category.id, account_id=account_id, card_id=card.id,
+        category_id=category.id, classification=entry.classification if (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set) else None, account_id=account_id, card_id=card.id,
         responsible_name=card.responsible_name or member.alias_name, is_shared=card.responsible_name == 'Conjunto',
         total_amount=total, installments_count=info['count'], imported_from_number=info['number'],
         purchase_date=date.fromisoformat(row['date']), first_due_date=first, status='ACTIVE',

@@ -247,7 +247,7 @@ def pay_installment(
         card_id=plan.card_id,
         responsible_name=plan.responsible_name,
         is_shared=plan.is_shared,
-        classification="NECESSIDADE",
+        classification=plan.classification or plan.category.classification,
         payment_method_id=plan.payment_method_id,
         status="REALIZADA",
         notes=f"Pagamento da parcela {installment.installment_number}/{plan.installments_count}",

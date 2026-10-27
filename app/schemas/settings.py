@@ -11,7 +11,7 @@ class CategoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     color: str = Field(default="#10B981", max_length=20)
     icon: str = Field(default="tag", max_length=50)
-    classification: str = Field(default="NECESSIDADE", pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")
+    classification: str = Field(default="NECESSIDADE", pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO|OUTRO)$")
     type: str = Field(default="DESPESA", pattern="^(DESPESA|RECEITA|AMBOS)$")
     order_index: int = 0
 
@@ -20,7 +20,7 @@ class CategoryUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     color: Optional[str] = None
     icon: Optional[str] = None
-    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")
+    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO|OUTRO)$")
     type: Optional[str] = Field(None, pattern="^(DESPESA|RECEITA|AMBOS)$")
     order_index: Optional[int] = None
     is_active: Optional[bool] = None

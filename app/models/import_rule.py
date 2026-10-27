@@ -10,6 +10,7 @@ class ImportMerchantRule(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     family_id = Column(UUID(as_uuid=True), ForeignKey('family_spaces.id', ondelete='CASCADE'), nullable=False, index=True)
     merchant_key = Column(String(255), nullable=False)
+    classification = Column(String(30), nullable=True)
     display_name = Column(String(255), nullable=False)
     category_id = Column(UUID(as_uuid=True), ForeignKey('categories.id', ondelete='SET NULL'), nullable=True)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)

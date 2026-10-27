@@ -61,43 +61,11 @@ def get_503020_budget(
         savings_pct=budget.savings_percentage
     )
 
-    # Compute actual realized spending for the month
-    _, last_day = calendar.monthrange(year, month)
-    start_date = date(year, month, 1)
-    end_date = date(year, month, last_day)
-
-    needs_spent = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.family_id == current_family.id,
-        Transaction.date >= start_date,
-        Transaction.date <= end_date,
-        Transaction.type == "DESPESA",
-        Transaction.classification == "NECESSIDADE",
-        Transaction.status == "REALIZADA",
-        Transaction.is_deleted == False,
-        Transaction.is_invoice_payment == False
-    ).scalar()
-
-    wants_spent = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.family_id == current_family.id,
-        Transaction.date >= start_date,
-        Transaction.date <= end_date,
-        Transaction.type == "DESPESA",
-        Transaction.classification == "DESEJO",
-        Transaction.status == "REALIZADA",
-        Transaction.is_deleted == False,
-        Transaction.is_invoice_payment == False
-    ).scalar()
-
-    savings_spent = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.family_id == current_family.id,
-        Transaction.date >= start_date,
-        Transaction.date <= end_date,
-        Transaction.type == "DESPESA",
-        Transaction.classification == "INVESTIMENTO",
-        Transaction.status == "REALIZADA",
-        Transaction.is_deleted == False,
-        Transaction.is_invoice_payment == False
-    ).scalar()
+    from app.services.budget_expenses import expenses_for_month
+    expenses=expenses_for_month(db,current_family.id,year,month)
+    def total(classification):
+        return sum((item['amount'] for item in expenses if item['classification']==classification),Decimal('0'))
+    needs_spent,wants_spent,savings_spent=total('NECESSIDADE'),total('DESEJO'),total('INVESTIMENTO')
 
     return Budget503020Response(
         id=budget.id,
@@ -111,6 +79,8 @@ def get_503020_budget(
         needs_allocated=breakdown["needs_allocated"],
         wants_allocated=breakdown["wants_allocated"],
         savings_allocated=breakdown["savings_allocated"],
+        other_spent=total('OUTRO'),
+        total_committed=sum((item['amount'] for item in expenses),Decimal('0')),
         needs_spent=Decimal(str(needs_spent)).quantize(Decimal("0.01")),
         wants_spent=Decimal(str(wants_spent)).quantize(Decimal("0.01")),
         savings_spent=Decimal(str(savings_spent)).quantize(Decimal("0.01")),
@@ -175,30 +145,14 @@ def get_custom_budgets(
         CustomBudget.month == month
     ).all()
 
-    _, last_day = calendar.monthrange(year, month)
-    start_date = date(year, month, 1)
-    end_date = date(year, month, last_day)
-
-    result = []
+    from app.services.budget_expenses import expenses_for_month
+    expenses=expenses_for_month(db,current_family.id,year,month)
+    result=[]
     for b in budgets:
-        # Calculate actual spent for this budget scope
-        q = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.family_id == current_family.id,
-            Transaction.date >= start_date,
-            Transaction.date <= end_date,
-            Transaction.type == "DESPESA",
-            Transaction.status == "REALIZADA",
-            Transaction.is_deleted == False,
-        Transaction.is_invoice_payment == False
-        )
-        if b.category_id:
-            q = q.filter(Transaction.category_id == b.category_id)
-        if b.responsible_name:
-            q = q.filter(Transaction.responsible_name == b.responsible_name)
-        if b.classification:
-            q = q.filter(Transaction.classification == b.classification)
-
-        spent = Decimal(str(q.scalar())).quantize(Decimal("0.01"))
+        spent=sum((item['amount'] for item in expenses
+            if (not b.category_id or item['category_id']==b.category_id)
+            and (not b.responsible_name or item['responsible_name']==b.responsible_name)
+            and (not b.classification or item['classification']==b.classification)),Decimal('0')).quantize(Decimal('.01'))
         stats = FinancialEngine.calculate_budget_usage(
             limit_amount=b.limit_amount,
             realized_spent=spent,

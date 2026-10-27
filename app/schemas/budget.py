@@ -29,6 +29,8 @@ class Budget503020Response(BaseModel):
     needs_allocated: Decimal
     wants_allocated: Decimal
     savings_allocated: Decimal
+    other_spent: Decimal = Decimal("0.00")
+    total_committed: Decimal = Decimal("0.00")
     needs_spent: Decimal = Decimal("0.00")
     wants_spent: Decimal = Decimal("0.00")
     savings_spent: Decimal = Decimal("0.00")
@@ -41,7 +43,7 @@ class CustomBudgetCreate(BaseModel):
     month: int = Field(..., ge=1, le=12)
     category_id: Optional[UUID] = None
     responsible_name: Optional[str] = None
-    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")
+    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO|OUTRO)$")
     limit_amount: Decimal = Field(..., gt=Decimal("0.00"))
     alert_threshold_percentage: Decimal = Field(default=Decimal("80.00"), ge=Decimal("1.00"), le=Decimal("100.00"))
 

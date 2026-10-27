@@ -19,7 +19,7 @@ class TransactionCreate(BaseModel):
     invoice_id: Optional[UUID] = None
     responsible_name: str = Field(..., min_length=1, max_length=100)
     is_shared: bool = False
-    classification: str = Field(default="NECESSIDADE", pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")
+    classification: str = Field(default="NECESSIDADE", pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO|OUTRO)$")
     payment_method_id: Optional[UUID] = None
     status: str = Field(default="REALIZADA", pattern="^(REALIZADA|PENDENTE|VENCIDA)$")
     notes: Optional[str] = None
@@ -37,7 +37,7 @@ class TransactionUpdate(BaseModel):
     card_id: Optional[UUID] = None
     responsible_name: Optional[str] = None
     is_shared: Optional[bool] = None
-    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO)$")
+    classification: Optional[str] = Field(None, pattern="^(NECESSIDADE|DESEJO|INVESTIMENTO|OUTRO)$")
     payment_method_id: Optional[UUID] = None
     status: Optional[str] = Field(None, pattern="^(REALIZADA|PENDENTE|VENCIDA)$")
     notes: Optional[str] = None
@@ -46,6 +46,8 @@ class TransactionUpdate(BaseModel):
 class TransactionResponse(BaseModel):
     is_invoice_payment: bool = False
     card_last_digits: Optional[str] = None
+    card_bank_name: Optional[str] = None
+    account_bank_name: Optional[str] = None
     invoice_year: Optional[int] = None
     invoice_month: Optional[int] = None
     invoice_id: Optional[UUID] = None

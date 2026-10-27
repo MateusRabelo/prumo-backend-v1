@@ -131,6 +131,7 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
             target(db, family.id, account_id, card_id)
         if digits and resolved.last_digits and resolved.last_digits not in digits:
             raise HTTPException(422, detail='O final do cartão selecionado não corresponde ao PDF. Escolha o cartão correto.')
+    active_categories={str(c.id):c for c in db.query(Category).filter_by(family_id=family.id,is_active=True).all()}
     rules = {rule.merchant_key: rule for rule in db.query(ImportMerchantRule).filter_by(family_id=family.id).all()}
     keys = [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows]
     existing = {value for (value,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(keys)).all()}
@@ -162,14 +163,22 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
             except HTTPException as exc:
                 row['blocked'], row['warning'] = True, exc.detail
         suggestion = detect(db,family.id,card_id,row,description)
-        output.append({**row, 'subscription_info': suggestion, 'description': description, 'category_id': str(matched.category_id) if matched else str(rule.category_id) if rule and rule.category_id else None,
+        category_id=str(matched.category_id) if matched else str(rule.category_id) if rule and rule.category_id else None
+        category=active_categories.get(category_id)
+        classification=(matched.classification if matched else None) or (rule.classification if rule else None) or (category.classification if category else 'OUTRO')
+        output.append({**row, 'subscription_info': suggestion, 'description': description, 'category_id': category_id, 'classification':classification, 'classification_explicit':bool((matched and matched.classification) or (rule and rule.classification)),
                        'learned': bool(rule), 'duplicate': key in existing or bool(suggestion and suggestion.get('already_recorded')),
                        'possible_duplicate': (row['date'], row['amount'], normalize(description)) in prior_values})
-    token = jwt.encode({'purpose': 'statement_preview', 'sub': str(user.id), 'family': str(family.id),
-        'account': str(account_id), 'card': str(card_id) if card_id else None, 'rows': rows, 'statement': statement,
-        'iat': now, 'exp': now + timedelta(minutes=30)}, settings.SECRET_KEY, algorithm='HS256')
-    return {'preview_token': token, 'rows': output, 'warnings': warnings, 'statement': statement, 'detected_card': detected_card, 'resolved_card_id': str(card_id) if card_id else None, 'resolved_account_id': str(account_id),
-            'notice': 'Confira com o arquivo original. Saldos, totais e linhas não reconhecidas não são importados. Nenhum lançamento foi salvo.'}
+    payload={'purpose':'statement_preview','sub':str(user.id),'family':str(family.id),
+        'account':str(account_id),'card':str(card_id) if card_id else None,'rows':rows,'statement':statement}
+    preview={'reference_month':reference_month,'rows':output,'warnings':warnings,'statement':statement,'detected_card':detected_card,
+        'resolved_card_id':str(card_id) if card_id else None,'resolved_account_id':str(account_id)}
+    from app.services.import_drafts import create_draft,draft_token,metadata
+    draft=create_draft(db,user,family,Path(file.filename or 'Extrato').name,payload,preview)
+    db.commit()
+    return {**preview,**metadata(draft),'draft_id':str(draft.id),'preview_token':draft_token(draft),
+        'notice':'Confira com o arquivo original. O rascunho foi salvo; nenhum lançamento financeiro foi criado.'}
+
 
 
 @router.post('/confirm')
@@ -181,6 +190,33 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         raise HTTPException(400, detail='A prévia expirou ou é inválida. Envie o arquivo novamente.')
     if payload.get('purpose') != 'statement_preview' or payload.get('sub') != str(user.id) or payload.get('family') != str(family.id):
         raise HTTPException(403, detail='Esta prévia pertence a outra conta ou espaço.')
+    confirmation_data=data.model_dump(mode='json',exclude={'preview_token','draft_id','draft_revision'})
+    for entry in confirmation_data['entries']:
+        if entry.get('classification') is None:entry.pop('classification',None)
+        if not entry.get('classification_explicit'):entry.pop('classification_explicit',None)
+    confirmation_hash=hashlib.sha256(json.dumps(confirmation_data,sort_keys=True).encode()).hexdigest()
+    draft=None
+    if payload.get('draft_id'):
+        from app.services.import_drafts import owned_draft
+        if data.draft_id and str(data.draft_id)!=payload['draft_id']:
+            raise HTTPException(403,detail='A prévia não corresponde ao rascunho informado.')
+        from app.models.import_draft import ImportDraft
+        draft=db.query(ImportDraft).filter_by(id=UUID(payload['draft_id']),user_id=user.id,family_id=family.id).with_for_update().first()
+        if not draft or (not draft.completed_at and draft.expires_at<=datetime.now(timezone.utc)):raise HTTPException(404,detail='Rascunho descartado ou indisponível.')
+        if draft.completed_at:
+            if payload.get('card'):
+                from app.api.v1.cards import get_current_invoice_period
+                completed_card=db.query(CreditCard).filter_by(id=UUID(payload['card']),family_id=family.id).first()
+                periods={(payload['statement']['year'],payload['statement']['month'])} if payload.get('statement') else {get_current_invoice_period(completed_card,date.fromisoformat(row['date'])) for row in payload['rows']} if completed_card else set()
+                if any((i.year,i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=UUID(payload['card'])).filter((CardInvoice.paid_amount>0)|(CardInvoice.external_settled==True)).all()):
+                    raise HTTPException(409,detail='Fatura com pagamento: importação já concluída e composição protegida.')
+            if draft.review_state.get('confirmation_hash')!=confirmation_hash:
+                raise HTTPException(409,detail='Esta importação já foi concluída. Gere outra prévia para uma nova seleção.')
+            return {'imported':0,'skipped':len(data.entries)}
+        if data.draft_revision is not None and draft.revision!=data.draft_revision:
+            raise HTTPException(409,detail='O rascunho foi alterado em outra aba. Reabra antes de importar.')
+    elif data.draft_id:
+        raise HTTPException(400,detail='Gere novamente a prévia deste rascunho.')
     statement = payload.get('statement')
     if statement and statement['totals_match'] is False:
         raise HTTPException(409, detail='A leitura não fecha com o resumo do PDF. Nenhum lançamento foi salvo. Precisamos revisar este layout.')
@@ -255,8 +291,8 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
             existing.add(key); imported += 1
             if entry.remember and merchant_key(row['original_description']):
                 db.execute(insert(ImportMerchantRule).values(family_id=family.id, merchant_key=merchant_key(row['original_description']),
-                    display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc)).on_conflict_do_update(
-                    constraint='uq_import_merchant_family', set_={'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
+                    display_name=merchant_name(entry.description), category_id=entry.category_id, classification=entry.classification if (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set) else None, updated_at=datetime.now(timezone.utc)).on_conflict_do_update(
+                    constraint='uq_import_merchant_family', set_={'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'classification':entry.classification if (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set) else None, 'updated_at': datetime.now(timezone.utc)}))
             continue
         subscription = None
         if entry.import_subscription:
@@ -270,7 +306,7 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
                 continue
         transaction = Transaction(recurrence_id=subscription.id if subscription else None, invoice_assignment='EXPLICIT' if statement_invoice else 'DATE', family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
             description=entry.description, type=entry.type, amount=Decimal(row['amount']), account_id=account_id,
-            payment_mode="CREDIT" if card_id else "ACCOUNT", card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
+            payment_mode="CREDIT" if card_id else "ACCOUNT", card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=entry.classification or (category.classification if category else 'OUTRO'),
             responsible_name=card.responsible_name or actor if card else actor, is_shared=bool(card and card.responsible_name == 'Conjunto'),
             status='REALIZADA', idempotency_key=key, notes='Importado de extrato. Descrição original: ' + row['original_description'])
         db.add(transaction)
@@ -278,11 +314,15 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         imported += 1
         if entry.remember and normalize(row['original_description']):
             db.execute(insert(ImportMerchantRule).values(family_id=family.id, merchant_key=merchant_key(row['original_description']),
-                display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc))
+                display_name=merchant_name(entry.description), category_id=entry.category_id, classification=entry.classification if (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set) else None, updated_at=datetime.now(timezone.utc))
                 .on_conflict_do_update(constraint='uq_import_merchant_family', set_={
-                    'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
+                    'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'classification':entry.classification if (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set) else None, 'updated_at': datetime.now(timezone.utc)}))
     AuditService.log(db, family.id, user.id, 'IMPORT_STATEMENT', 'ACCOUNT', str(account_id),
                      new_values={'imported': imported, 'skipped': skipped, 'card_id': str(card_id) if card_id else None})
+    if draft:
+        draft.review_state={'confirmation_hash':confirmation_hash}
+        draft.completed_at=datetime.now(timezone.utc)
+        draft.preview_payload={};draft.preview_data={}
     db.commit()
     return {'imported': imported, 'skipped': skipped}
 
