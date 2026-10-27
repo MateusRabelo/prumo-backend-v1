@@ -191,9 +191,11 @@ def create_transaction(
         if not category:
             raise HTTPException(status_code=400, detail="Categoria inválida")
 
+    invoice_assignment = 'EXPLICIT' if data.invoice_id else 'DATE'
     if card and data.payment_mode == 'CREDIT' and not data.invoice_id:
         data = data.model_copy(update={'invoice_id': ensure_invoice(db, current_family.id, card, data.date).id})
     transaction = Transaction(
+        invoice_assignment=invoice_assignment,
         payment_mode=data.payment_mode,
         family_id=current_family.id,
         created_by_id=current_user.id,
@@ -276,7 +278,10 @@ def update_transaction(
     merged = {column.name: getattr(transaction, column.name) for column in Transaction.__table__.columns}
     merged.update(data.model_dump(exclude_unset=True))
     from app.services.card_flow import resolve_card_flow, ensure_invoice
-    if transaction.invoice_id and data.payment_mode == 'DEBIT':
+    auto_reassign = transaction.invoice_assignment == 'DATE' and any(k in data.model_fields_set for k in ('date', 'card_id', 'payment_mode'))
+    if auto_reassign:
+        merged['invoice_id'] = None
+    if transaction.invoice_id and data.payment_mode == 'DEBIT' and not auto_reassign:
         raise HTTPException(409, detail='Uma compra já vinculada à fatura não pode virar débito')
     card = resolve_card_flow(db, current_family.id, merged)
     validate_relations(db, current_family.id, merged)
@@ -287,6 +292,8 @@ def update_transaction(
 
     update_dict = data.model_dump(exclude_unset=True)
     update_dict.update({'account_id': merged['account_id'], 'payment_mode': merged['payment_mode']})
+    if auto_reassign:
+        update_dict['invoice_id'] = None
     if card and merged['payment_mode'] == 'CREDIT' and not merged.get('invoice_id'):
         update_dict['invoice_id'] = ensure_invoice(db, current_family.id, card, merged['date']).id
     for key, value in update_dict.items():

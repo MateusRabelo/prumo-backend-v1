@@ -10,3 +10,5 @@
 - Responsáveis de membros seguem seus apelidos. `Conjunto` é ativado somente com mais de um membro. Rótulos históricos de lançamentos não são reescritos e responsáveis manuais são preservados.
 
 Migração: `e41bd230aa17`. Preencher modalidade de movimentos legados não exclui lançamentos. Faça backup antes de aplicar.
+
+`f0ac36e32b81` distingue a atribuição por data da escolha explícita de fatura. Ao alterar a data/cartão/modalidade de uma compra atribuída por data, o destino é recalculado; escolhas explícitas do usuário ou do PDF permanecem preservadas. Faturas já pagas continuam protegidas.

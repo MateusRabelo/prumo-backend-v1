@@ -34,6 +34,17 @@ def test_credit_debit_and_installments_share_correct_account_and_invoice(client,
     invoice = client.get(P+f"/cards/{card['id']}/invoices/2026/11",headers=auth_headers).json()
     assert Decimal(str(invoice['total_amount'])) == 200
     assert len(invoice['items']) == 2
+    moved = client.put(P+'/transactions/'+credit['id'],headers=auth_headers,json={'date':'2026-11-27'})
+    assert moved.status_code==200,moved.text
+    assert 'Dezembro' in moved.json()['invoice_label']
+    november=client.get(P+f"/cards/{card['id']}/invoices/2026/11",headers=auth_headers).json()
+    assert Decimal(str(november['total_amount']))==100
+    switched=client.put(P+'/transactions/'+credit['id'],headers=auth_headers,json={'payment_mode':'DEBIT'})
+    assert switched.status_code==200,switched.text
+    assert switched.json()['invoice_id'] is None
+    december=client.get(P+f"/cards/{card['id']}/invoices/2026/12",headers=auth_headers).json()
+    assert Decimal(str(december['total_amount']))==100
+    assert len(december['items'])==1 and december['items'][0]['is_installment']
     other = post('/settings/accounts',{'name':'Outro','account_type':'CHECKING'})
     assert client.post(P+'/transactions',headers=auth_headers,json={**base,'account_id':other['id']}).status_code==400
 

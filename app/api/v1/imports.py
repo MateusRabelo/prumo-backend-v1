@@ -253,7 +253,7 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
                     display_name=merchant_name(entry.description), category_id=entry.category_id, updated_at=datetime.now(timezone.utc)).on_conflict_do_update(
                     constraint='uq_import_merchant_family', set_={'display_name': merchant_name(entry.description), 'category_id': entry.category_id, 'updated_at': datetime.now(timezone.utc)}))
             continue
-        transaction = Transaction(family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
+        transaction = Transaction(invoice_assignment='EXPLICIT' if statement_invoice else 'DATE', family_id=family.id, created_by_id=user.id, date=date.fromisoformat(row['date']),
             description=entry.description, type=entry.type, amount=Decimal(row['amount']), account_id=account_id,
             payment_mode="CREDIT" if card_id else "ACCOUNT", card_id=card_id, invoice_id=statement_invoice.id if statement_invoice else None, category_id=entry.category_id, classification=category.classification if category else 'NECESSIDADE',
             responsible_name=card.responsible_name or actor if card else actor, is_shared=bool(card and card.responsible_name == 'Conjunto'),

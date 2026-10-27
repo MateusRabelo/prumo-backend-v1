@@ -31,6 +31,7 @@ class Transaction(Base):
     installment_id = Column(UUID(as_uuid=True), ForeignKey("installments.id", ondelete="SET NULL", use_alter=True, name="fk_transactions_installment_id"), nullable=True)
     recurrence_id = Column(UUID(as_uuid=True), ForeignKey("recurrence_rules.id", ondelete="SET NULL"), nullable=True)
     is_invoice_payment = Column(Boolean, default=False, nullable=False)
+    invoice_assignment = Column(String(16), default='DATE', server_default='DATE', nullable=False)
     invoice_id = Column(UUID(as_uuid=True), ForeignKey("card_invoices.id", ondelete="SET NULL", use_alter=True, name="fk_transactions_invoice_id"), nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
