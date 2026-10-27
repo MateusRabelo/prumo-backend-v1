@@ -38,3 +38,4 @@ __all__ = [
 ]
 
 from app.models.security import RateLimitBucket, PasswordResetToken
+from app.models.import_rule import ImportMerchantRule

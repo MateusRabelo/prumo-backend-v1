@@ -29,6 +29,7 @@ class CardInvoiceResponse(BaseModel):
     year: int
     month: int
     period_label: str
+    cycle_start_date: date
     closing_date: date
     due_date: date
     total_amount: Decimal
@@ -49,3 +50,21 @@ class InvoicePayRequest(BaseModel):
     payment_date: date = Field(default_factory=date.today)
     amount: Optional[Decimal] = Field(None, gt=Decimal("0"))
     notes: Optional[str] = None
+
+
+class InvoiceOverviewItem(BaseModel):
+    card_name: str
+    invoice: CardInvoiceResponse
+
+
+class InvoiceOverview(BaseModel):
+    year: int
+    month: int
+    bank_balance: Decimal
+    available_for_payment: Decimal
+    total_amount: Decimal
+    paid_amount: Decimal
+    remaining_amount: Decimal
+    shortfall: Decimal
+    balance_after_payment: Decimal
+    invoices: List[InvoiceOverviewItem]

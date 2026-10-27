@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import date
 from typing import Any, List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -112,6 +113,8 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
     Computes exact real balance:
     initial_balance + Realized Income - Realized Expense + Incoming Transfers - Outgoing Transfers
     """
+    if account.initial_balance_date > date.today():
+        return Decimal("0.00")
     initial = Decimal(str(account.initial_balance))
 
     # Realized Income on this account
@@ -119,6 +122,7 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
         Transaction.account_id == account.id,
         Transaction.family_id == account.family_id,
         Transaction.date >= account.initial_balance_date,
+        Transaction.date <= date.today(),
         Transaction.type == "RECEITA",
         Transaction.status == "REALIZADA",
         Transaction.is_deleted == False
@@ -129,6 +133,7 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
         Transaction.account_id == account.id,
         Transaction.family_id == account.family_id,
         Transaction.date >= account.initial_balance_date,
+        Transaction.date <= date.today(),
         Transaction.type == "DESPESA",
         Transaction.status == "REALIZADA",
         Transaction.is_deleted == False,
@@ -140,6 +145,7 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
         Transaction.destination_account_id == account.id,
         Transaction.family_id == account.family_id,
         Transaction.date >= account.initial_balance_date,
+        Transaction.date <= date.today(),
         Transaction.type == "TRANSFERENCIA",
         Transaction.status == "REALIZADA",
         Transaction.is_deleted == False
@@ -150,6 +156,7 @@ def compute_account_balance(db: Session, account: FinancialAccount) -> Decimal:
         Transaction.account_id == account.id,
         Transaction.family_id == account.family_id,
         Transaction.date >= account.initial_balance_date,
+        Transaction.date <= date.today(),
         Transaction.type == "TRANSFERENCIA",
         Transaction.status == "REALIZADA",
         Transaction.is_deleted == False

@@ -15,6 +15,7 @@ from app.api.v1 import (
     reports,
     audit,
     cards,
+    imports,
 )
 
 from app.services.automatic_audit import install_audit_hooks
@@ -50,6 +51,7 @@ app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 app.include_router(reports.router, prefix=settings.API_V1_STR)
 app.include_router(audit.router, prefix=settings.API_V1_STR)
 app.include_router(cards.router, prefix=settings.API_V1_STR)
+app.include_router(imports.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/health", tags=["Health"])

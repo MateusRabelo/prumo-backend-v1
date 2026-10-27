@@ -17,7 +17,7 @@ from app.models.account import FinancialAccount
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.settings import CreditCardCreate, CreditCardResponse, CreditCardUpdate
-from app.schemas.invoice import CardInvoiceResponse, CardInvoiceItem, InvoicePayRequest
+from app.schemas.invoice import CardInvoiceResponse, CardInvoiceItem, InvoicePayRequest, InvoiceOverview
 
 from app.services.validation import validate_relations
 from app.services.audit_service import AuditService
@@ -228,6 +228,7 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
             year=year,
             month=month,
             period_label=period_label,
+            cycle_start_date=start_date,
             closing_date=closing_date,
             due_date=due_date,
             total_amount=total_amount,
@@ -259,6 +260,7 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
         year=year,
         month=month,
         period_label=period_label,
+        cycle_start_date=start_date,
         closing_date=closing_date,
         due_date=due_date,
         total_amount=total_amount,
@@ -272,6 +274,57 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
 
 
 # --- CARD CRUD ---
+
+@router.get("/invoices/overview", response_model=InvoiceOverview)
+def invoice_overview(year: int, month: int,
+                     current_family: FamilySpace = Depends(get_current_family),
+                     db: Session = Depends(get_db)):
+    if not 2000 <= year <= 2100 or not 1 <= month <= 12:
+        raise HTTPException(400, detail="Competência inválida")
+    from app.api.v1.settings import compute_account_balance
+    accounts = db.query(FinancialAccount).filter(
+        FinancialAccount.family_id == current_family.id,
+        FinancialAccount.is_active == True,
+        FinancialAccount.account_type.in_(["CHECKING", "SAVINGS", "WALLET"]),
+    ).all()
+    balance = sum((compute_account_balance(db, a) for a in accounts), Decimal("0.00"))
+    cards = db.query(CreditCard).filter(
+        CreditCard.family_id == current_family.id, CreditCard.is_active == True,
+        CreditCard.card_type.in_(["CREDIT", "MULTIPLE"]),
+    ).order_by(CreditCard.name).all()
+    rows = [{"card_name": c.name, "invoice": build_invoice_response(db, c, year, month)} for c in cards]
+    rows = [r for r in rows if r["invoice"].id or r["invoice"].items_count]
+    remaining = sum((r["invoice"].remaining_amount for r in rows), Decimal("0.00"))
+    available = max(Decimal("0.00"), balance)
+    return dict(year=year, month=month, bank_balance=balance, available_for_payment=available,
+                total_amount=sum((r["invoice"].total_amount for r in rows), Decimal("0.00")),
+                paid_amount=sum((r["invoice"].paid_amount for r in rows), Decimal("0.00")),
+                remaining_amount=remaining, shortfall=max(Decimal("0.00"), remaining - available),
+                balance_after_payment=balance - remaining, invoices=rows)
+
+
+@router.post("/{card_id}/invoices/{year}/{month}", response_model=CardInvoiceResponse)
+def create_card_invoice(card_id: UUID, year: int, month: int,
+                        current_family: FamilySpace = Depends(get_current_family),
+                        current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not 2000 <= year <= 2100 or not 1 <= month <= 12:
+        raise HTTPException(400, detail="Competência inválida")
+    card = db.query(CreditCard).filter_by(id=card_id, family_id=current_family.id, is_active=True).with_for_update().first()
+    if not card:
+        raise HTTPException(404, detail="Cartão não encontrado")
+    if card.card_type not in ("CREDIT", "MULTIPLE"):
+        raise HTTPException(400, detail="Faturas são exclusivas de cartões de crédito ou múltiplos")
+    existing = db.query(CardInvoice).filter_by(card_id=card.id, year=year, month=month).first()
+    if not existing:
+        response = build_invoice_response(db, card, year, month)
+        invoice = CardInvoice(family_id=current_family.id, card_id=card.id, year=year, month=month,
+                              closing_date=response.closing_date, due_date=response.due_date,
+                              total_amount=response.total_amount, paid_amount=Decimal("0.00"), status=response.status)
+        db.add(invoice)
+        db.flush()
+        AuditService.log(db, current_family.id, current_user.id, "CREATE", "INVOICE", str(invoice.id))
+        db.commit()
+    return build_invoice_response(db, card, year, month)
 
 @router.get("", response_model=List[CreditCardResponse])
 def get_cards(
@@ -566,7 +619,8 @@ def pay_card_invoice(
     account = db.query(FinancialAccount).filter(
         FinancialAccount.id == data.account_id,
         FinancialAccount.family_id == current_family.id,
-        FinancialAccount.is_active == True
+        FinancialAccount.is_active == True,
+        FinancialAccount.account_type.in_(["CHECKING", "SAVINGS", "WALLET"])
     ).first()
     if not account:
         raise HTTPException(status_code=404, detail="Conta bancária de pagamento não encontrada")
