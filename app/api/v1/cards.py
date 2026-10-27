@@ -17,7 +17,7 @@ from app.models.account import FinancialAccount
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.settings import CreditCardCreate, CreditCardResponse, CreditCardUpdate
-from app.schemas.invoice import CardInvoiceResponse, CardInvoiceItem, InvoicePayRequest, InvoiceOverview
+from app.schemas.invoice import CardInvoiceResponse, CardInvoiceItem, InvoicePayRequest, InvoiceOverview, InvoiceExternalPaymentRequest
 
 from app.services.validation import validate_relations
 from app.services.audit_service import AuditService
@@ -215,7 +215,9 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
         paid_amount = Decimal(str(saved_invoice.paid_amount)).quantize(Decimal("0.01"))
         remaining_amount = max(Decimal("0.00"), total_amount - paid_amount).quantize(Decimal("0.01"))
         inv_status = saved_invoice.status
-        if inv_status != "PAGA":
+        if inv_status != "PAGA" and total_amount == 0:
+            inv_status = "ABERTA"
+        elif inv_status != "PAGA":
             if today > due_date:
                 inv_status = "VENCIDA"
             elif today > closing_date:
@@ -239,6 +241,8 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
             status=inv_status,
             items_count=len(items),
             is_current=is_current,
+            external_settled=saved_invoice.external_settled,
+            external_paid_amount=saved_invoice.external_paid_amount,
             payment_date=saved_invoice.payment_date,
             payment_account_id=saved_invoice.payment_account_id,
             payment_account_name=payment_account_name,
@@ -690,29 +694,8 @@ def pay_card_invoice(
 
     fully_paid = inv_resp.paid_amount + pay_amount >= inv_resp.total_amount
 
-    # 2. Settle installments only when the invoice is fully paid
-    insts = db.query(Installment).join(InstallmentPlan).filter(
-        InstallmentPlan.card_id == card.id,
-        Installment.due_date >= date(year, month, 1),
-        Installment.due_date <= date(year, month, calendar.monthrange(year, month)[1]),
-        Installment.status == "PENDENTE"
-    ).all()
-
-    for inst in insts if fully_paid else []:
-        inst.status = "PAGA"
-        inst.payment_date = data.payment_date
-        # Recognize the installment expense without a second cash outflow.
-        tx = Transaction(family_id=current_family.id, created_by_id=current_user.id,
-            date=inst.due_date, description=f"{inst.plan.description} ({inst.installment_number}/{inst.plan.installments_count})",
-            type="DESPESA", amount=inst.amount, category_id=inst.plan.category_id,
-            account_id=inst.plan.account_id or card.account_id or data.account_id, card_id=card.id, payment_mode="CREDIT", responsible_name=inst.plan.responsible_name,
-            is_shared=inst.plan.is_shared, classification="NECESSIDADE", status="REALIZADA",
-            installment_id=inst.id, invoice_id=invoice_record.id)
-        db.add(tx)
-        db.flush()
-        inst.transaction_id = tx.id
-        if all(i.status in ("PAGA", "CANCELADA") for i in inst.plan.installments):
-            inst.plan.status = "COMPLETED"
+    if fully_paid:
+        recognize_invoice_installments(db, current_family, current_user, card, invoice_record, year, month, data.payment_date, data.account_id)
 
     # 3. Link card expenses in this cycle to this invoice
     cycle_txs = db.query(Transaction).filter(
@@ -761,6 +744,8 @@ def reverse_invoice_payment(card_id: UUID, year: int, month: int, payment_id: UU
         invoice_id=invoice.id if invoice else None, is_invoice_payment=True, is_deleted=False).first() if invoice else None
     if not payment:
         raise HTTPException(404, detail='Pagamento não encontrado ou já estornado')
+    if invoice.external_settled:
+        raise HTTPException(409, detail='Desfaça a confirmação de pagamento externo antes de estornar um pagamento bancário.')
     if invoice.status == 'PAGA':
         recognized = db.query(Transaction).filter(Transaction.invoice_id == invoice.id,
             Transaction.installment_id.is_not(None), Transaction.is_deleted == False).all()
@@ -784,3 +769,113 @@ def reverse_invoice_payment(card_id: UUID, year: int, month: int, payment_id: UU
                      new_values={'payment_id': str(payment.id), 'amount': str(payment.amount)})
     db.commit()
     return build_invoice_response(db, card, year, month)
+
+
+def recognize_invoice_installments(db, family, user, card, invoice_record, year, month, payment_date, fallback_account_id=None):
+    insts = db.query(Installment).join(InstallmentPlan).filter(
+        InstallmentPlan.card_id == card.id,
+        Installment.due_date >= date(year, month, 1),
+        Installment.due_date <= date(year, month, calendar.monthrange(year, month)[1]),
+        Installment.status == "PENDENTE"
+    ).all()
+
+    for inst in insts:
+        if not (inst.plan.account_id or card.account_id or fallback_account_id):
+            raise HTTPException(400, detail='Vincule uma conta ao cartão antes de conciliar suas parcelas.')
+        inst.status = "PAGA"
+        inst.payment_date = payment_date
+        # Recognize the installment expense without a second cash outflow.
+        tx = Transaction(family_id=family.id, created_by_id=user.id,
+            date=inst.due_date, description=f"{inst.plan.description} ({inst.installment_number}/{inst.plan.installments_count})",
+            type="DESPESA", amount=inst.amount, category_id=inst.plan.category_id,
+            account_id=inst.plan.account_id or card.account_id or fallback_account_id, card_id=card.id, payment_mode="CREDIT", responsible_name=inst.plan.responsible_name,
+            is_shared=inst.plan.is_shared, classification="NECESSIDADE", status="REALIZADA",
+            installment_id=inst.id, invoice_id=invoice_record.id)
+        db.add(tx)
+        db.flush()
+        inst.transaction_id = tx.id
+        if all(i.status in ("PAGA", "CANCELADA") for i in inst.plan.installments):
+            inst.plan.status = "COMPLETED"
+
+
+
+
+def verify_settlement_password(db, user, password):
+    from app.core.security import verify_password
+    from app.models.security import RateLimitBucket
+    from sqlalchemy.dialects.postgresql import insert
+    import time
+    now = datetime.now(timezone.utc)
+    key = hashlib.sha256(f'invoice-confirm:{user.id}:{int(time.time() // 900)}'.encode()).hexdigest()
+    count = db.execute(insert(RateLimitBucket).values(key=key,count=1,expires_at=now+timedelta(minutes=30))
+        .on_conflict_do_update(index_elements=['key'],set_={'count':RateLimitBucket.count+1})
+        .returning(RateLimitBucket.count)).scalar_one()
+    db.commit()
+    if count > 10:
+        raise HTTPException(429, detail='Muitas confirmações. Aguarde 15 minutos antes de tentar novamente.')
+    if not verify_password(password,user.hashed_password):
+        raise HTTPException(400, detail='Senha incorreta. Use a senha da conta que está conectada ao Prumo.')
+
+
+@router.post('/{card_id}/invoices/{year}/{month}/external-payment',response_model=CardInvoiceResponse)
+def acknowledge_external_payment(card_id: UUID, year: int, month: int, data: InvoiceExternalPaymentRequest,
+    current_family: FamilySpace=Depends(get_admin_family),current_user: User=Depends(get_current_user),db: Session=Depends(get_db)):
+    if not 2000 <= year <= 2100 or not 1 <= month <= 12:
+        raise HTTPException(400, detail='Período inválido')
+    if data.payment_date > date.today():
+        raise HTTPException(400, detail='Um pagamento já realizado não pode ter data futura')
+    verify_settlement_password(db,current_user,data.password)
+    card=db.query(CreditCard).filter_by(id=card_id,family_id=current_family.id,is_active=True).with_for_update().first()
+    if not card or card.card_type not in ('CREDIT','MULTIPLE'):
+        raise HTTPException(404, detail='Cartão de crédito não encontrado')
+    view=build_invoice_response(db,card,year,month)
+    if view.total_amount != data.expected_total:
+        raise HTTPException(409, detail='A fatura mudou. Atualize a tela e confira os valores novamente.')
+    if view.status == 'PAGA':
+        return view
+    invoice=db.query(CardInvoice).filter_by(card_id=card.id,year=year,month=month).first()
+    if not invoice:
+        invoice=CardInvoice(family_id=current_family.id,card_id=card.id,year=year,month=month,
+            closing_date=view.closing_date,due_date=view.due_date,total_amount=view.total_amount,paid_amount=0)
+        db.add(invoice);db.flush()
+    recognize_invoice_installments(db,current_family,current_user,card,invoice,year,month,data.payment_date,card.account_id)
+    start,closing,_=get_invoice_cycle_dates(card,year,month)
+    txs=db.query(Transaction).filter(Transaction.card_id==card.id,invoice_transactions(invoice,start,closing),
+        Transaction.payment_mode=='CREDIT',Transaction.is_deleted==False,Transaction.is_invoice_payment==False).all()
+    for tx in txs:
+        tx.invoice_id=invoice.id;tx.status='REALIZADA'
+    invoice.total_amount=view.total_amount
+    invoice.external_paid_amount=view.remaining_amount
+    invoice.paid_amount=view.total_amount
+    invoice.external_settled=True
+    invoice.status='PAGA'
+    invoice.payment_date=data.payment_date
+    AuditService.log(db,current_family.id,current_user.id,'ACKNOWLEDGE_EXTERNAL_PAYMENT','INVOICE',str(invoice.id),
+        new_values={'amount':str(view.remaining_amount),'payment_date':str(data.payment_date),'cash_movement':False})
+    db.commit()
+    return build_invoice_response(db,card,year,month)
+
+
+@router.post('/{card_id}/invoices/{year}/{month}/external-payment/reverse',response_model=CardInvoiceResponse)
+def reverse_external_payment(card_id: UUID,year: int,month: int,data: InvoiceExternalPaymentRequest,
+    current_family: FamilySpace=Depends(get_admin_family),current_user: User=Depends(get_current_user),db: Session=Depends(get_db)):
+    verify_settlement_password(db,current_user,data.password)
+    card=db.query(CreditCard).filter_by(id=card_id,family_id=current_family.id).with_for_update().first()
+    invoice=db.query(CardInvoice).filter_by(card_id=card.id,year=year,month=month).first() if card else None
+    if not invoice or not invoice.external_settled:
+        raise HTTPException(404, detail='Confirmação externa não encontrada')
+    if invoice.total_amount != data.expected_total:
+        raise HTTPException(409, detail='A fatura mudou. Atualize e confira novamente.')
+    recognized=db.query(Transaction).filter(Transaction.invoice_id==invoice.id,Transaction.installment_id.is_not(None),Transaction.is_deleted==False).all()
+    for tx in recognized:
+        parcel=db.query(Installment).filter_by(id=tx.installment_id).one()
+        parcel.status='PENDENTE';parcel.payment_date=None;parcel.transaction_id=None
+        parcel.plan.status='ACTIVE';tx.is_deleted=True
+    invoice.paid_amount=Decimal(invoice.paid_amount)-Decimal(invoice.external_paid_amount)
+    invoice.external_paid_amount=0;invoice.external_settled=False
+    invoice.status='FECHADA' if invoice.paid_amount else 'ABERTA'
+    latest=db.query(Transaction).filter_by(invoice_id=invoice.id,is_invoice_payment=True,is_deleted=False).order_by(Transaction.created_at.desc()).first()
+    invoice.payment_date=latest.date if latest else None
+    AuditService.log(db,current_family.id,current_user.id,'REVERSE_EXTERNAL_PAYMENT','INVOICE',str(invoice.id),new_values={'cash_movement':False})
+    db.commit()
+    return build_invoice_response(db,card,year,month)

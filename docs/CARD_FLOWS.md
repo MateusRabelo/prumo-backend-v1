@@ -12,3 +12,11 @@
 Migração: `e41bd230aa17`. Preencher modalidade de movimentos legados não exclui lançamentos. Faça backup antes de aplicar.
 
 `f0ac36e32b81` distingue a atribuição por data da escolha explícita de fatura. Ao alterar a data/cartão/modalidade de uma compra atribuída por data, o destino é recalculado; escolhas explícitas do usuário ou do PDF permanecem preservadas. Faturas já pagas continuam protegidas.
+
+## Pagamento já realizado fora do Prumo
+
+`POST /cards/{card_id}/invoices/{year}/{month}/external-payment` exige administrador, senha da conta conectada, data não futura e o total esperado para detectar alterações concorrentes. Confirma o restante da fatura sem criar saída bancária. Parcelas são reconhecidas e o limite é liberado; faturas vazias podem ser encerradas sem inventar o valor histórico pago. Confirmações são auditadas sem senha, com limite de tentativas por usuário.
+
+`POST .../external-payment/reverse` exige novamente a senha e desfaz a conciliação sem alterar caixa. Pagamentos bancários anteriores são preservados. A confirmação externa deve ser desfeita antes de estornar um pagamento bancário. Enquanto confirmada, a composição da fatura fica protegida, inclusive quando o total é zero.
+
+A tela distingue mês do vencimento e intervalo de compras. Uma fatura vazia não é considerada vencida apenas por sua data, nem presumida paga.

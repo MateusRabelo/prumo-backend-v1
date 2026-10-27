@@ -40,7 +40,7 @@ def protect_linked_transaction(db, transaction):
     linked_goal = db.query(GoalContribution.id).filter(GoalContribution.transaction_id == transaction.id).first()
     from app.models.invoice import CardInvoice
     invoice = db.get(CardInvoice, transaction.invoice_id) if transaction.invoice_id else None
-    if transaction.is_invoice_payment or transaction.installment_id or (invoice and invoice.paid_amount > 0) or linked_goal:
+    if transaction.is_invoice_payment or transaction.installment_id or (invoice and (invoice.paid_amount > 0 or invoice.external_settled)) or linked_goal:
         raise HTTPException(409, detail='Movimentação vinculada: utilize o fluxo de pagamento ou estorno correspondente')
 
 
@@ -70,7 +70,7 @@ def validate_card_periods(db, family_id, values):
         periods = {get_current_invoice_period(card, values['date'])}
     for year, month in periods:
         invoice = db.query(CardInvoice).filter_by(card_id=card.id, year=year, month=month).first()
-        if invoice and invoice.paid_amount > 0:
+        if invoice and (invoice.paid_amount > 0 or invoice.external_settled):
             raise HTTPException(409, detail='Fatura com pagamento não permite alterar sua composição')
 
 

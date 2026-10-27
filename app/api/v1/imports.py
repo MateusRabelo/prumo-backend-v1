@@ -139,7 +139,7 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
     prior = db.query(Transaction).filter(Transaction.family_id == family.id, Transaction.account_id == account_id if not card_id else True,
         Transaction.card_id == card_id, Transaction.date.between(min(dates), max(dates)), Transaction.is_deleted == False).all()
     prior_values = {(str(tx.date), str(Decimal(tx.amount).quantize(Decimal('.01'))), normalize(tx.description)) for tx in prior}
-    paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, CardInvoice.paid_amount > 0).all()} if card_id else set()
+    paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, ((CardInvoice.paid_amount > 0) | (CardInvoice.external_settled == True))).all()} if card_id else set()
     _, card = target(db, family.id, account_id, card_id)
     from app.api.v1.cards import get_current_invoice_period
     output = []
@@ -192,7 +192,7 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
     rows = payload['rows']
     categories = {str(c.id): c for c in db.query(Category).filter_by(family_id=family.id, is_active=True).all()}
     from app.api.v1.cards import get_current_invoice_period
-    paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, CardInvoice.paid_amount > 0).all()} if card_id else set()
+    paid_periods = {(i.year, i.month) for i in db.query(CardInvoice).filter(CardInvoice.card_id == card_id, ((CardInvoice.paid_amount > 0) | (CardInvoice.external_settled == True))).all()} if card_id else set()
     existing = {key for (key,) in db.query(Transaction.idempotency_key).filter(Transaction.idempotency_key.in_(
         [dedupe_key(family.id, account_id, card_id, row['fingerprint']) for row in rows])).all()}
     existing |= {value for (value,) in db.query(StatementImportLink.key).filter(StatementImportLink.key.in_([dedupe_key(family.id, account_id, card_id, r['fingerprint']) for r in rows])).all()}

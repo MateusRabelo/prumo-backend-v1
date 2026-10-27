@@ -38,6 +38,8 @@ class CardInvoiceResponse(BaseModel):
     status: str  # ABERTA, FECHADA, PAGA, VENCIDA
     items_count: int = 0
     is_current: bool = False
+    external_settled: bool = False
+    external_paid_amount: Decimal = Decimal("0.00")
     payment_date: Optional[date] = None
     payment_account_id: Optional[UUID] = None
     payment_account_name: Optional[str] = None
@@ -68,3 +70,10 @@ class InvoiceOverview(BaseModel):
     shortfall: Decimal
     balance_after_payment: Decimal
     invoices: List[InvoiceOverviewItem]
+
+
+class InvoiceExternalPaymentRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=False)
+    password: str = Field(min_length=1, max_length=128, repr=False)
+    payment_date: date = Field(default_factory=date.today)
+    expected_total: Decimal = Field(ge=Decimal('0'))

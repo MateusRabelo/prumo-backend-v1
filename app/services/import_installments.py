@@ -49,7 +49,7 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
     if plan:
         dates |= {i.due_date for i in plan.installments if i.installment_number >= info['number'] and i.status == 'PENDENTE'}
     periods = {(d.year, d.month) for d in dates}
-    if any((i.year, i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=card.id).filter(CardInvoice.paid_amount > 0).all()):
+    if any((i.year, i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=card.id).filter(((CardInvoice.paid_amount > 0) | (CardInvoice.external_settled == True))).all()):
         raise HTTPException(409, detail='Uma das parcelas pertence a uma fatura com pagamento. Revise o plano sem alterar o histórico pago.')
     if plan:
         parcel = next(i for i in plan.installments if i.installment_number == info['number'])

@@ -18,6 +18,8 @@ class CardInvoice(Base):
     closing_date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=False)
     total_amount = Column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    external_settled = Column(Boolean, default=False, server_default='false', nullable=False)
+    external_paid_amount = Column(Numeric(12, 2), default=Decimal('0.00'), server_default='0', nullable=False)
     paid_amount = Column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     status = Column(String(20), default="ABERTA", nullable=False)  # ABERTA, FECHADA, PAGA, VENCIDA
     payment_date = Column(Date, nullable=True)
