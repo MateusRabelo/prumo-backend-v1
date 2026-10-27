@@ -11,3 +11,9 @@ OFX de cartão com `CCSTMTRS` e `DTEND` informa o período de fechamento. Esse p
 O limite da prévia assinada é de 800 mil caracteres, preservando os limites de 4 MB, 500 linhas, validade de 30 minutos e validação da assinatura e do contexto. O validador genérico de 10 mil caracteres não deve se sobrepor a esse limite. As mensagens de validação da interface não exibem o token nem os valores de entrada da exceção.
 
 Migração `b73e9102c1d4` preserva as regras anteriores. Testes com OFX privado são opcionais e locais; documentos bancários não fazem parte do repositório.
+
+## Revisão por categoria e regras de parcelas
+
+A prévia agrupa compras por categoria e permite aplicar uma categoria em lote às parcelas sem categoria, aos selecionados sem categoria ou a todos os selecionados. A edição ignora duplicados, bloqueados, desmarcados e tipos incompatíveis. Categorias atuais são preservadas nas opções sem categoria. A opção de aprender regras só é persistida ao confirmar a importação.
+
+Regras de estabelecimento ignoram o sufixo numérico da parcela. `Loja - Parcela 1/5`, `Loja - Parcela 2/5` e `Loja - Parcelas 1/10` usam a mesma chave de nome/categoria. A descrição digitada com `1/*` ou `*/*` é normalizada sem guardar os curingas no nome do plano. Número e quantidade reais continuam na parcela assinada da prévia. Na prévia, renomear uma parcela também atualiza o nome das outras parcelas do mesmo estabelecimento, sem modificar seus números ou valores.

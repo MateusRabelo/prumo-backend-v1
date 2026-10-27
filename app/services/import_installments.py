@@ -9,7 +9,7 @@ from app.services.statement_parser import normalize
 
 
 def merchant_name(description):
-    return re.sub(r'\s*(?:-\s*)?Parcela\s+\d+\s*/\s*\d+\s*$', '', description, flags=re.I).strip()
+    return re.sub(r'\s*(?:[-·]\s*)?Parcelas?\s+(?:\d+|\*)\s*/\s*(?:\d+|\*)\s*$', '', description, flags=re.I).strip()
 
 
 def merchant_key(description):
@@ -66,7 +66,7 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
         plan.account_id = account_id
         if category:
             plan.category_id = category.id
-        plan.description = re.sub(r'\s*(?:-\s*)?Parcela\s+\d+\s*/\s*\d+\s*$', '', entry.description, flags=re.I).strip()
+        plan.description = merchant_name(entry.description)
         return parcel, True
     if not category:
         raise HTTPException(400, detail='Escolha uma categoria para criar o parcelamento identificado')
@@ -77,7 +77,7 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
         raise HTTPException(400, detail='O valor do parcelamento excede o limite permitido')
     from app.models.family import FamilyMembership
     member = db.query(FamilyMembership).filter_by(family_id=family.id, user_id=user.id).one()
-    name = re.sub(r'\s*(?:-\s*)?Parcela\s+\d+\s*/\s*\d+\s*$', '', entry.description, flags=re.I).strip()
+    name = merchant_name(entry.description)
     plan = InstallmentPlan(family_id=family.id, created_by_id=user.id, description=name,
         category_id=category.id, account_id=account_id, card_id=card.id,
         responsible_name=card.responsible_name or member.alias_name, is_shared=card.responsible_name == 'Conjunto',
