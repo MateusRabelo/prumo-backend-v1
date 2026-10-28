@@ -13,7 +13,7 @@ def setup(client, headers):
         r = client.post(P+path, headers=headers, json=data)
         assert r.status_code in (200,201), r.text
         return r.json()
-    account = post('/settings/accounts', {'name':'Nubank', 'account_type':'CHECKING', 'initial_balance':'1000'})
+    account = post('/settings/accounts', {'name':'Nubank', 'account_type':'CHECKING', 'initial_balance':'1000','initial_balance_date':'2026-10-01'})
     card = post('/cards', {'name':'Nu', 'card_type':'MULTIPLE','account_id':account['id'],'closing_day':20,'due_day':28,'credit_limit':'5000'})
     category = client.get(P+'/settings/categories',headers=headers).json()[0]
     return post, account, card, category

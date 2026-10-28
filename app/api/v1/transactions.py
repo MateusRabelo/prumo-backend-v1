@@ -17,6 +17,7 @@ from app.models.account import FinancialAccount
 from app.models.payment_method import PaymentMethod
 from app.schemas.transaction import (
     TransactionCreate,
+    TransactionBulkUpdate,
     TransactionUpdate,
     TransactionResponse,
     TransactionSummary,
@@ -246,6 +247,63 @@ def create_transaction(
     db.commit()
     db.refresh(transaction)
     return transaction_to_schema(transaction)
+
+
+@router.post("/bulk")
+def bulk_update_transactions(
+    data: TransactionBulkUpdate,
+    current_user: User = Depends(get_current_user),
+    current_family: FamilySpace = Depends(get_current_family),
+    db: Session = Depends(get_db),
+):
+    from app.models.card import CreditCard
+    from app.models.responsible import ResponsiblePerson
+    if data.responsible_name is None and data.status is None:
+        raise HTTPException(400, detail="Escolha um responsável ou uma situação")
+    ids = [item.id for item in data.items]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(400, detail="Há lançamentos repetidos na seleção")
+    responsible = None
+    if data.responsible_name is not None:
+        responsible = db.query(ResponsiblePerson).filter_by(
+            family_id=current_family.id, name=data.responsible_name, is_active=True
+        ).first()
+        if not responsible:
+            raise HTTPException(400, detail="Responsável inválido para este espaço")
+    rows = db.query(Transaction).filter(
+        Transaction.id.in_(ids), Transaction.family_id == current_family.id,
+        Transaction.is_deleted == False,
+    ).all()
+    if len(rows) != len(ids):
+        raise HTTPException(404, detail="Um lançamento não está disponível neste espaço")
+    card_ids = sorted({t.card_id for t in rows if t.card_id}, key=str)
+    for card_id in card_ids:
+        db.query(CreditCard).filter_by(id=card_id, family_id=current_family.id).with_for_update().first()
+    versions = {item.id: item.updated_at for item in data.items}
+    for row in sorted(rows, key=lambda t: str(t.id)):
+        db.refresh(row, with_for_update=True)
+        if row.is_deleted or row.family_id != current_family.id or (row.card_id and row.card_id not in card_ids) or row.updated_at != versions[row.id]:
+            raise HTTPException(409, detail="Um lançamento foi alterado. Atualize a lista e selecione novamente")
+        try:
+            protect_linked_transaction(db, row)
+            if data.status is not None:
+                validate_card_periods(db, current_family.id, {
+                    'card_id': row.card_id, 'payment_mode': row.payment_mode,
+                    'invoice_id': row.invoice_id, 'date': row.date,
+                })
+        except HTTPException as exc:
+            raise HTTPException(exc.status_code, detail=f'{row.description}: {exc.detail}') from exc
+    for row in rows:
+        before = transaction_snapshot(row)
+        if responsible:
+            row.responsible_name = responsible.name
+            row.is_shared = responsible.is_shared
+        if data.status is not None:
+            row.status = data.status
+        AuditService.log(db, current_family.id, current_user.id, "UPDATE", "TRANSACTION",
+                         str(row.id), before, transaction_snapshot(row))
+    db.commit()
+    return {"updated": len(rows)}
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)

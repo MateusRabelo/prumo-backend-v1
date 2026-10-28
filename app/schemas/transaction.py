@@ -100,3 +100,14 @@ class TransactionListResponse(BaseModel):
     skip: int
     limit: int
     summary: TransactionSummary
+
+
+class BulkTransactionItem(BaseModel):
+    id: UUID
+    updated_at: datetime
+
+
+class TransactionBulkUpdate(BaseModel):
+    items: List[BulkTransactionItem] = Field(min_length=1, max_length=100)
+    responsible_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    status: Optional[str] = Field(default=None, pattern="^(REALIZADA|PENDENTE|VENCIDA)$")
