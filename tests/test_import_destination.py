@@ -15,6 +15,12 @@ def test_final_destination_from_bank_preview_creates_parcels_in_explicit_referen
     assert get_current_invoice_period(model,date(2026,11,4))==(2026,10)
     assert get_current_invoice_period(model,date(2026,11,5))==(2026,11)
     assert get_invoice_cycle_dates(model,2026,10)[1:]==(date(2026,11,4),date(2026,11,10))
+    from app.services.import_destination import resolve_destination
+    from app.schemas.statement_import import ImportDestination
+    _, _, corrected = resolve_destination(db, model.family_id,
+        {'statement': {'format': 'ofx', 'year': 2026, 'month': 11, 'closing_date': '2026-11-04', 'due_date': '2026-11-28'}},
+        ImportDestination(account_id=account['id'],card_id=card['id'],invoice_month='2026-10'))
+    assert corrected['due_date']=='2026-11-10'
     ofx='<OFX><CCSTMTRS><BANKTRANLIST><DTSTART>20261004<DTEND>20261104<STMTTRN><DTPOSTED>20261004<TRNAMT>-50.00<FITID>parcel-reference-test<MEMO>Loja - Parcela 3/6</STMTTRN></BANKTRANLIST></CCSTMTRS></OFX>'
     r=client.post(P+'/imports/preview',headers=auth_headers,data={'account_id':account['id'],'reference_month':'2026-10'},files={'file':('fatura.ofx',ofx.encode(),'application/x-ofx')})
     assert r.status_code==200,r.text

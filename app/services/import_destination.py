@@ -24,6 +24,13 @@ def resolve_destination(db, family_id, payload, destination):
     year, month = map(int, destination.invoice_month.split('-'))
     if statement:
         statement.update(year=year, month=month)
+        if statement.get('format') == 'ofx' and statement.get('closing_date'):
+            closing = date.fromisoformat(statement['closing_date'])
+            due_year, due_month = closing.year, closing.month
+            if card.due_day <= closing.day:
+                due_year, due_month = due_year + (due_month == 12), due_month % 12 + 1
+            _, _, due = get_invoice_cycle_dates(card, *divmod_reference(due_year, due_month, getattr(card, 'billing_month_offset', 0) or 0))
+            statement['due_date'] = str(due)
     else:
         closing_raw = payload.get('source_closing_date')
         if closing_raw:
