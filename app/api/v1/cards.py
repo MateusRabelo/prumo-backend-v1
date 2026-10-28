@@ -36,7 +36,19 @@ def invoice_transactions(invoice, start_date, closing_date):
                and_(Transaction.invoice_id.is_(None), Transaction.date >= start_date, Transaction.date <= closing_date))
 
 
+def invoice_installments(invoice, year, month, card):
+    due = invoice.due_date if invoice else get_invoice_cycle_dates(card, year, month)[2]
+    year, month = due.year, due.month
+    return or_(Installment.invoice_id == invoice.id if invoice else false(),
+               and_(Installment.invoice_id.is_(None),
+                    Installment.due_date >= date(year, month, 1),
+                    Installment.due_date <= date(year, month, calendar.monthrange(year, month)[1])))
+
+
 def get_invoice_cycle_dates(card: CreditCard, year: int, month: int):
+    index = year * 12 + month - 1 - (getattr(card, "billing_month_offset", 0) or 0)
+    year, month0 = divmod(index, 12)
+    month = month0 + 1
     _, last_day_of_month = calendar.monthrange(year, month)
     due_day = min(card.due_day, last_day_of_month)
     due_date = date(year, month, due_day)
@@ -71,7 +83,7 @@ def get_invoice_cycle_dates(card: CreditCard, year: int, month: int):
     return start_date, closing_date, due_date
 
 
-def get_current_invoice_period(card: CreditCard, ref_date: Optional[date] = None) -> tuple[int, int]:
+def _due_invoice_period(card: CreditCard, ref_date: Optional[date] = None) -> tuple[int, int]:
     if not ref_date:
         ref_date = date.today()
 
@@ -97,6 +109,13 @@ def get_current_invoice_period(card: CreditCard, ref_date: Optional[date] = None
                 m -= 12
                 y += 1
             return y, m
+
+
+def get_current_invoice_period(card: CreditCard, ref_date: Optional[date] = None) -> tuple[int, int]:
+    year, month = _due_invoice_period(card, ref_date)
+    index = year * 12 + month - 1 + (getattr(card, 'billing_month_offset', 0) or 0)
+    year, month0 = divmod(index, 12)
+    return year, month0 + 1
 
 
 def compute_card_limits(db: Session, card: CreditCard):
@@ -172,8 +191,7 @@ def build_invoice_response(db: Session, card: CreditCard, year: int, month: int)
     # Installment parcels falling into this invoice
     insts = db.query(Installment).join(InstallmentPlan).filter(
         InstallmentPlan.card_id == card.id,
-        Installment.due_date >= date(year, month, 1),
-        Installment.due_date <= date(year, month, calendar.monthrange(year, month)[1]),
+        invoice_installments(saved_invoice, year, month, card),
         Installment.status != "CANCELADA"
     ).order_by(Installment.due_date.asc()).all()
 
@@ -354,6 +372,7 @@ def get_cards(
             bank_name=c.bank_name,
             last_digits=c.last_digits,
             credit_limit=c.credit_limit,
+            billing_month_offset=c.billing_month_offset,
             closing_day=c.closing_day,
             due_day=c.due_day,
             color=c.color,
@@ -407,6 +426,7 @@ def create_card(
         bank_name=card.bank_name,
         last_digits=card.last_digits,
         credit_limit=card.credit_limit,
+        billing_month_offset=card.billing_month_offset,
         closing_day=card.closing_day,
         due_day=card.due_day,
         color=card.color,
@@ -446,6 +466,7 @@ def get_card_by_id(
         bank_name=card.bank_name,
         last_digits=card.last_digits,
         credit_limit=card.credit_limit,
+        billing_month_offset=card.billing_month_offset,
         closing_day=card.closing_day,
         due_day=card.due_day,
         color=card.color,
@@ -498,6 +519,7 @@ def update_card(
         bank_name=card.bank_name,
         last_digits=card.last_digits,
         credit_limit=card.credit_limit,
+        billing_month_offset=card.billing_month_offset,
         closing_day=card.closing_day,
         due_day=card.due_day,
         color=card.color,
@@ -774,8 +796,7 @@ def reverse_invoice_payment(card_id: UUID, year: int, month: int, payment_id: UU
 def recognize_invoice_installments(db, family, user, card, invoice_record, year, month, payment_date, fallback_account_id=None):
     insts = db.query(Installment).join(InstallmentPlan).filter(
         InstallmentPlan.card_id == card.id,
-        Installment.due_date >= date(year, month, 1),
-        Installment.due_date <= date(year, month, calendar.monthrange(year, month)[1]),
+        invoice_installments(invoice_record, year, month, card),
         Installment.status == "PENDENTE"
     ).all()
 

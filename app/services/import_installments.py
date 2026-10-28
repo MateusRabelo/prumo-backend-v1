@@ -48,7 +48,8 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
     dates = {monthly_due(first, offset, card.due_day) for offset in range(info['count'] - info['number'] + 1)}
     if plan:
         dates |= {i.due_date for i in plan.installments if i.installment_number >= info['number'] and i.status == 'PENDENTE'}
-    periods = {(d.year, d.month) for d in dates}
+    offset = getattr(card, 'billing_month_offset', 0) or 0
+    periods = {((d.year * 12 + d.month - 1 + offset) // 12, (d.year * 12 + d.month - 1 + offset) % 12 + 1) for d in dates}
     if any((i.year, i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=card.id).filter(((CardInvoice.paid_amount > 0) | (CardInvoice.external_settled == True))).all()):
         raise HTTPException(409, detail='Uma das parcelas pertence a uma fatura com pagamento. Revise o plano sem alterar o histórico pago.')
     if plan:
@@ -69,6 +70,7 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
         if entry.classification and (entry.classification_explicit or 'classification_explicit' not in entry.model_fields_set):
             plan.classification = entry.classification
         plan.description = merchant_name(entry.description)
+        assign_invoices(db, family.id, card, invoice, plan, info['number'])
         return parcel, True
     if not category:
         raise HTTPException(400, detail='Escolha uma categoria para criar o parcelamento identificado')
@@ -95,4 +97,27 @@ def apply_parcel(db, family, user, account_id, card, row, entry, category, invoi
         if offset == 0:
             current = parcel
     db.flush()
+    assign_invoices(db, family.id, card, invoice, plan, info['number'])
     return current, True
+
+
+def assign_invoices(db, family_id, card, invoice, plan, number):
+    """Reference month and bank due date may differ; keep the explicit association."""
+    from app.models.invoice import CardInvoice
+    for parcel in plan.installments:
+        if parcel.installment_number < number or parcel.status != 'PENDENTE':
+            continue
+        offset = parcel.installment_number - number
+        if offset == 0:
+            parcel.invoice_id = invoice.id
+            continue
+        ref = monthly_due(date(invoice.year, invoice.month, 1), offset, 1)
+        target = db.query(CardInvoice).filter_by(card_id=card.id, year=ref.year, month=ref.month).first()
+        if target and (target.paid_amount > 0 or target.external_settled):
+            raise HTTPException(409, detail='Uma parcela futura pertence a uma fatura já paga.')
+        if not target:
+            target = CardInvoice(family_id=family_id, card_id=card.id, year=ref.year, month=ref.month,
+                closing_date=monthly_due(invoice.closing_date, offset, card.closing_day),
+                due_date=monthly_due(invoice.due_date, offset, card.due_day), total_amount=0, paid_amount=0)
+            db.add(target); db.flush()
+        parcel.invoice_id = target.id

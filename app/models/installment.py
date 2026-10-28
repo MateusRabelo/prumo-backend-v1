@@ -45,6 +45,7 @@ class Installment(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     installment_plan_id = Column(UUID(as_uuid=True), ForeignKey("installment_plans.id", ondelete="CASCADE"), nullable=False, index=True)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("card_invoices.id", ondelete="SET NULL"), nullable=True, index=True)
     installment_number = Column(Integer, nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
     due_date = Column(Date, nullable=False, index=True)

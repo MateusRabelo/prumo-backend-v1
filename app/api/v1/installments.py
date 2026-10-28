@@ -321,6 +321,9 @@ def cancel_installment_plan(
         validate_card_periods(db, current_family.id, {
             "card_id": plan.card_id, "first_due_date": plan.first_due_date,
             "installments_count": len(plan.installments)})
+        for item in plan.installments:
+            if item.invoice_id:
+                validate_card_periods(db, current_family.id, {'card_id': plan.card_id, 'invoice_id': item.invoice_id})
     db.query(InstallmentPlan).filter_by(id=plan.id).with_for_update().one()
     # Serialize cancellation with standalone installment payments.
     pending = db.query(Installment).filter_by(installment_plan_id=plan.id).order_by(Installment.id).with_for_update().all()

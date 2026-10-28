@@ -25,7 +25,14 @@ class ImportSelection(BaseModel):
         return value
 
 
+class ImportDestination(BaseModel):
+    account_id: UUID
+    card_id: Optional[UUID] = None
+    invoice_month: Optional[str] = Field(default=None, pattern=r"^20\d{2}-(0[1-9]|1[0-2])$")
+
+
 class ImportConfirm(BaseModel):
+    destination: Optional[ImportDestination] = None
     draft_id: Optional[UUID] = None
     draft_revision: Optional[int] = Field(None, ge=1)
     preview_token: str = Field(max_length=800_000)

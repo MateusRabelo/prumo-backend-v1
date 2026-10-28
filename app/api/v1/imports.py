@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -108,11 +109,16 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
                 text = content.decode('utf-8-sig')
             except UnicodeDecodeError:
                 text = content.decode('cp1252')
-        rows, warnings = parse_statement(text, extension, reference, card=bool(card_id))
+        credit_statement = extension == 'ofx' and bool(re.search(r'<CCSTMTRS>', text, re.I))
+        rows, warnings = parse_statement(text, extension, reference, card=bool(card_id) or credit_statement)
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
     from app.services.ofx_statement import statement_summary as ofx_summary
     statement = statement_summary(text, rows) if extension == 'pdf' else ofx_summary(text, rows, source_card) if extension == 'ofx' else None
+    if statement and source_card and source_card.billing_month_offset:
+        index = statement['year'] * 12 + statement['month'] - 1 + source_card.billing_month_offset
+        sy, sm = divmod(index, 12)
+        statement.update(year=sy, month=sm+1)
     if statement and not card_id:
         raise HTTPException(422, detail='Este PDF é uma fatura de cartão. Selecione Fatura de cartão de crédito e o cartão correspondente.')
     if statement and statement['totals_match'] is False:
@@ -170,8 +176,14 @@ async def preview_statement(file: UploadFile = File(...), account_id: UUID = For
                        'learned': bool(rule), 'duplicate': key in existing or bool(suggestion and suggestion.get('already_recorded')),
                        'possible_duplicate': (row['date'], row['amount'], normalize(description)) in prior_values})
     payload={'purpose':'statement_preview','sub':str(user.id),'family':str(family.id),
-        'account':str(account_id),'card':str(card_id) if card_id else None,'rows':rows,'statement':statement}
-    preview={'reference_month':reference_month,'rows':output,'warnings':warnings,'statement':statement,'detected_card':detected_card,
+        'account':str(account_id),'card':str(card_id) if card_id else None,'rows':rows,'statement':statement,
+        'credit_statement':credit_statement, 'source_closing_date': None}
+    if credit_statement:
+        closing_match = re.search(r'<DTEND>\s*(\d{4})(\d{2})(\d{2})', text, re.I)
+        if closing_match:
+            try: payload['source_closing_date'] = str(date(*map(int,closing_match.groups())))
+            except ValueError: pass
+    preview={'credit_statement':credit_statement,'reference_month':reference_month,'rows':output,'warnings':warnings,'statement':statement,'detected_card':detected_card,
         'resolved_card_id':str(card_id) if card_id else None,'resolved_account_id':str(account_id)}
     from app.services.import_drafts import create_draft,draft_token,metadata
     draft=create_draft(db,user,family,Path(file.filename or 'Extrato').name,payload,preview)
@@ -191,6 +203,7 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
     if payload.get('purpose') != 'statement_preview' or payload.get('sub') != str(user.id) or payload.get('family') != str(family.id):
         raise HTTPException(403, detail='Esta prévia pertence a outra conta ou espaço.')
     confirmation_data=data.model_dump(mode='json',exclude={'preview_token','draft_id','draft_revision'})
+    if confirmation_data.get('destination') is None: confirmation_data.pop('destination', None)
     for entry in confirmation_data['entries']:
         if entry.get('classification') is None:entry.pop('classification',None)
         if not entry.get('classification_explicit'):entry.pop('classification_explicit',None)
@@ -204,11 +217,15 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         draft=db.query(ImportDraft).filter_by(id=UUID(payload['draft_id']),user_id=user.id,family_id=family.id).with_for_update().first()
         if not draft or (not draft.completed_at and draft.expires_at<=datetime.now(timezone.utc)):raise HTTPException(404,detail='Rascunho descartado ou indisponível.')
         if draft.completed_at:
-            if payload.get('card'):
+            completed_card_id = data.destination.card_id if data.destination else UUID(payload['card']) if payload.get('card') else None
+            if completed_card_id:
                 from app.api.v1.cards import get_current_invoice_period
-                completed_card=db.query(CreditCard).filter_by(id=UUID(payload['card']),family_id=family.id).first()
-                periods={(payload['statement']['year'],payload['statement']['month'])} if payload.get('statement') else {get_current_invoice_period(completed_card,date.fromisoformat(row['date'])) for row in payload['rows']} if completed_card else set()
-                if any((i.year,i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=UUID(payload['card'])).filter((CardInvoice.paid_amount>0)|(CardInvoice.external_settled==True)).all()):
+                completed_card=db.query(CreditCard).filter_by(id=completed_card_id,family_id=family.id).first()
+                if data.destination and data.destination.invoice_month:
+                    periods={tuple(map(int,data.destination.invoice_month.split('-')))}
+                else:
+                    periods={(payload['statement']['year'],payload['statement']['month'])} if payload.get('statement') else {get_current_invoice_period(completed_card,date.fromisoformat(row['date'])) for row in payload['rows']} if completed_card else set()
+                if any((i.year,i.month) in periods for i in db.query(CardInvoice).filter_by(card_id=completed_card_id).filter((CardInvoice.paid_amount>0)|(CardInvoice.external_settled==True)).all()):
                     raise HTTPException(409,detail='Fatura com pagamento: importação já concluída e composição protegida.')
             if draft.review_state.get('confirmation_hash')!=confirmation_hash:
                 raise HTTPException(409,detail='Esta importação já foi concluída. Gere outra prévia para uma nova seleção.')
@@ -224,7 +241,15 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         raise HTTPException(400, detail='Confira o resumo e reconheça que pagamentos e estornos precisam ser conciliados separadamente.')
     account_id = UUID(payload['account'])
     card_id = UUID(payload['card']) if payload['card'] else None
-    _, card = target(db, family.id, account_id, card_id, lock=True)
+    card = None
+    if not data.destination:
+        _, card = target(db, family.id, account_id, card_id, lock=True)
+    if data.destination:
+        from app.services.import_destination import resolve_destination
+        account_id, card, statement = resolve_destination(db, family.id, payload, data.destination)
+        card_id = card.id if card else None
+    elif payload.get('credit_statement') and not card:
+        raise HTTPException(400, detail='Confirme o cartão de crédito de destino antes de salvar esta fatura.')
     indices = [entry.index for entry in data.entries]
     if len(indices) != len(set(indices)):
         raise HTTPException(400, detail='A seleção contém linhas repetidas.')
@@ -247,6 +272,8 @@ def confirm_statement(data: ImportConfirm, family: FamilySpace = Depends(get_cur
         row = rows[entry.index]
         if entry.import_subscription and entry.import_installment:
             raise HTTPException(400,detail='Uma linha não pode ser assinatura e parcelamento ao mesmo tempo.')
+        if card and row.get('type') != 'DESPESA':
+            raise HTTPException(400, detail='Receitas e pagamentos não podem ser importados como compras no cartão.')
         if row['blocked']:
             raise HTTPException(400, detail='A seleção contém uma linha que exige tratamento manual.')
         if card and (entry.type != 'DESPESA' or ((statement['year'], statement['month']) if statement else get_current_invoice_period(card, date.fromisoformat(row['date']))) in paid_periods):

@@ -116,6 +116,7 @@ class CreditCardUpdate(BaseModel):
 
 
 class CreditCardResponse(BaseModel):
+    billing_month_offset: int = 0
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

@@ -65,7 +65,8 @@ def validate_card_periods(db, family_id, values):
         periods = {(assigned.year, assigned.month)}
     elif values.get('first_due_date'):
         dates = RecurrenceEngine.generate_due_dates(values['first_due_date'], 'MONTHLY', values['installments_count'], values['first_due_date'].day)
-        periods = {(d.year, d.month) for d in dates}
+        offset = getattr(card, 'billing_month_offset', 0) or 0
+        periods = {((d.year * 12 + d.month - 1 + offset) // 12, (d.year * 12 + d.month - 1 + offset) % 12 + 1) for d in dates}
     else:
         periods = {get_current_invoice_period(card, values['date'])}
     for year, month in periods:

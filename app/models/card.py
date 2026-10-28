@@ -18,6 +18,7 @@ class CreditCard(Base):
     bank_name = Column(String(100), nullable=True)  # Nubank, Itaú, Inter, etc.
     last_digits = Column(String(4), nullable=True)
     credit_limit = Column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    billing_month_offset = Column(Integer, default=0, server_default='0', nullable=False)
     closing_day = Column(Integer, default=1, nullable=False)  # 1-31
     due_day = Column(Integer, default=10, nullable=False)  # 1-31
     color = Column(String(20), default="#6366F1", nullable=False)
