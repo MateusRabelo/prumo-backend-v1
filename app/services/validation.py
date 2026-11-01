@@ -64,7 +64,7 @@ def validate_card_periods(db, family_id, values):
         db.refresh(assigned)  # Re-read after the card lock; a concurrent payment may have completed.
         periods = {(assigned.year, assigned.month)}
     elif values.get('first_due_date'):
-        dates = RecurrenceEngine.generate_due_dates(values['first_due_date'], 'MONTHLY', values['installments_count'], values['first_due_date'].day)
+        dates = RecurrenceEngine.generate_due_dates(values['first_due_date'], values.get('frequency', 'MONTHLY'), values['installments_count'], values['first_due_date'].day)
         offset = getattr(card, 'billing_month_offset', 0) or 0
         periods = {((d.year * 12 + d.month - 1 + offset) // 12, (d.year * 12 + d.month - 1 + offset) % 12 + 1) for d in dates}
     else:

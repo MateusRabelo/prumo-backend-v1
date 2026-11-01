@@ -21,7 +21,7 @@ def find_plan(db, family_id, card_id, row, display_name):
         return None
     names = {merchant_key(info['description']), merchant_key(display_name)}
     candidates = db.query(InstallmentPlan).filter(InstallmentPlan.family_id == family_id,
-        InstallmentPlan.card_id == card_id, InstallmentPlan.status != 'CANCELLED',
+        InstallmentPlan.card_id == card_id, InstallmentPlan.frequency == 'MONTHLY', InstallmentPlan.status != 'CANCELLED',
         InstallmentPlan.installments_count == info['count']).all()
     matches = [plan for plan in candidates if merchant_key(plan.description) in names and any(
         i.installment_number == info['number'] and abs(Decimal(i.amount) - Decimal(row['amount'])) <= Decimal('.01')

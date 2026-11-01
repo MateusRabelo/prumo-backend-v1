@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Literal
 from uuid import UUID
 from app.schemas.base import BaseModel
 from pydantic import ConfigDict, Field, model_validator
@@ -22,6 +22,7 @@ class InstallmentResponse(BaseModel):
 
 
 class InstallmentPlanCreate(BaseModel):
+    frequency: Literal['MONTHLY', 'WEEKLY'] = 'MONTHLY'
     @model_validator(mode="after")
     def minimum_parcel(self):
         if self.total_amount < Decimal(self.installments_count) / 100:
@@ -43,6 +44,7 @@ class InstallmentPlanCreate(BaseModel):
 
 
 class InstallmentPlanResponse(BaseModel):
+    frequency: Literal['MONTHLY', 'WEEKLY'] = 'MONTHLY'
     imported_from_number: int = 1
     model_config = ConfigDict(from_attributes=True)
 

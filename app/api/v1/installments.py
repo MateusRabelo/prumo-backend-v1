@@ -68,6 +68,7 @@ def plan_to_schema(plan: InstallmentPlan) -> InstallmentPlanResponse:
         installments_count=plan.installments_count,
         purchase_date=plan.purchase_date,
         first_due_date=plan.first_due_date,
+        frequency=plan.frequency,
         notes=plan.notes,
         status=plan.status,
         paid_amount=paid.quantize(Decimal("0.01")),
@@ -135,6 +136,7 @@ def create_installment_plan(
         installments_count=data.installments_count,
         purchase_date=data.purchase_date,
         first_due_date=data.first_due_date,
+        frequency=data.frequency,
         notes=data.notes,
         status="ACTIVE"
     )
@@ -145,7 +147,7 @@ def create_installment_plan(
     amounts = FinancialEngine.calculate_cents_distribution(data.total_amount, data.installments_count)
     due_dates = RecurrenceEngine.generate_due_dates(
         start_date=data.first_due_date,
-        frequency="MONTHLY",
+        frequency=data.frequency,
         installments_or_periods=data.installments_count,
         day_of_month=data.first_due_date.day
     )
@@ -320,7 +322,7 @@ def cancel_installment_plan(
     if plan.card_id:
         validate_card_periods(db, current_family.id, {
             "card_id": plan.card_id, "first_due_date": plan.first_due_date,
-            "installments_count": len(plan.installments)})
+            "installments_count": len(plan.installments), "frequency": plan.frequency})
         for item in plan.installments:
             if item.invoice_id:
                 validate_card_periods(db, current_family.id, {'card_id': plan.card_id, 'invoice_id': item.invoice_id})
